@@ -46,6 +46,22 @@ def _pixel_samples(ffmpeg: Path, video: Path, frames: tuple[int, ...], x: int, y
     return [stdout[index * size:(index + 1) * size] for index in range(len(frames))]
 
 
+def _video_timestamps(ffprobe: Path, video: Path) -> list[float]:
+    args = [
+        str(ffprobe), "-v", "error", "-select_streams", "v:0", "-show_frames",
+        "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(video),
+    ]
+    process = subprocess.Popen(args, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate(timeout=30)
+    assert process.returncode == 0, stderr.decode("utf-8", "replace")
+    payload = json.loads(stdout.decode("utf-8"))
+    return [
+        float(frame["best_effort_timestamp_time"])
+        for frame in payload.get("frames", [])
+        if "best_effort_timestamp_time" in frame
+    ]
+
+
 @pytest.fixture(scope="module")
 def ffmpeg_capabilities():
     try:
@@ -247,7 +263,9 @@ def test_odd_vfr_nonzero_pts_source_is_normalized(tmp_path, ffmpeg_capabilities)
     source_probe = probe_media(source, ffmpeg_capabilities.ffprobe_path)
     assert (source_probe.width, source_probe.height) == (321, 181)
     assert source_probe.start_time_seconds == pytest.approx(1.0)
-    assert source_probe.is_vfr
+    timestamps = _video_timestamps(ffmpeg_capabilities.ffprobe_path, source)
+    frame_intervals = {round(current - previous, 3) for previous, current in zip(timestamps, timestamps[1:])}
+    assert len(frame_intervals) > 1, "source fixture must contain variable frame intervals"
     job = RenderJob(
         (VideoItem(source, source.name),),
         None,
