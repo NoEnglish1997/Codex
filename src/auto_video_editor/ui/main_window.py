@@ -153,6 +153,11 @@ class MainWindow(QMainWindow):
         self.subtitle_edit.setReadOnly(True)
         self.logo_edit = QLineEdit()
         self.logo_edit.setReadOnly(True)
+        self.logo_scale = QSpinBox()
+        self.logo_scale.setRange(10, 300)
+        self.logo_scale.setSingleStep(10)
+        self.logo_scale.setSuffix("%")
+        self.logo_scale.setValue(self._settings.logo_scale_percent)
         self.music_edit = QLineEdit()
         self.music_edit.setReadOnly(True)
         self.music_info = QLabel("无配乐")
@@ -176,20 +181,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cover_edit, 0, 1)
         layout.addWidget(cover_button, 0, 2)
         layout.addWidget(clear_cover, 0, 3)
-        layout.addWidget(self.cover_preview, 0, 4, 4, 1)
+        layout.addWidget(self.cover_preview, 0, 4, 5, 1)
         layout.addWidget(QLabel("移动 Logo（图片）"), 1, 0)
         layout.addWidget(self.logo_edit, 1, 1)
         layout.addWidget(logo_button, 1, 2)
         layout.addWidget(clear_logo, 1, 3)
-        layout.addWidget(QLabel("字幕（SRT/ASS）"), 2, 0)
-        layout.addWidget(self.subtitle_edit, 2, 1)
-        layout.addWidget(subtitle_button, 2, 2)
-        layout.addWidget(clear_subtitle, 2, 3)
-        layout.addWidget(QLabel("背景音乐"), 3, 0)
-        layout.addWidget(self.music_edit, 3, 1)
-        layout.addWidget(music_button, 3, 2)
-        layout.addWidget(clear_music, 3, 3)
-        layout.addWidget(self.music_info, 4, 1, 1, 3)
+        layout.addWidget(QLabel("Logo 缩放"), 2, 0)
+        layout.addWidget(self.logo_scale, 2, 1)
+        layout.addWidget(QLabel("100% = 默认最大 240×240"), 2, 2, 1, 2)
+        layout.addWidget(QLabel("字幕（SRT/ASS）"), 3, 0)
+        layout.addWidget(self.subtitle_edit, 3, 1)
+        layout.addWidget(subtitle_button, 3, 2)
+        layout.addWidget(clear_subtitle, 3, 3)
+        layout.addWidget(QLabel("背景音乐"), 4, 0)
+        layout.addWidget(self.music_edit, 4, 1)
+        layout.addWidget(music_button, 4, 2)
+        layout.addWidget(clear_music, 4, 3)
+        layout.addWidget(self.music_info, 5, 1, 1, 3)
         return group
 
     def _build_settings_group(self) -> QGroupBox:
@@ -454,6 +462,7 @@ class MainWindow(QMainWindow):
             music_volume=self.volume_slider.value() / 100,
             video_encoder=VideoEncoder(self.encoder_combo.currentData()),
             mirror_second_clip=self.mirror_second_clip.isChecked(),
+            logo_scale_percent=self.logo_scale.value(),
             subtitle_enabled=self.subtitle_enabled.isChecked(),
             subtitle_style=SubtitleStyle(
                 font_name=self.font_combo.currentFont().family(),
@@ -528,6 +537,7 @@ class MainWindow(QMainWindow):
             video_encoder=settings.video_encoder.value,
             mirror_second_clip=settings.mirror_second_clip,
             subtitle_font_name=settings.subtitle_style.font_name,
+            logo_scale_percent=settings.logo_scale_percent,
             ffmpeg_path=self.ffmpeg_edit.text(),
             ffprobe_path=self.ffprobe_edit.text(),
         )

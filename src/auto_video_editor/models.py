@@ -98,6 +98,7 @@ class RenderSettings:
     logo_start_frame: int = 5
     logo_max_width: int = 240
     logo_max_height: int = 240
+    logo_scale_percent: int = 100
     logo_margin: int = 48
 
 

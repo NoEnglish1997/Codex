@@ -82,3 +82,14 @@ def test_logo_moves_diagonally_from_top_right_to_bottom_left_after_five_frames()
     assert "x='W-w-48-(W-w-96)*clip((n-4)/595,0,1)'" in graph
     assert "y='48+(H-h-96)*clip((n-4)/595,0,1)'" in graph
     assert label == "[vout]"
+
+
+def test_logo_scale_percentage_changes_bounding_box_and_is_clamped():
+    larger, _ = build_final_video_filter(
+        RenderSettings(logo_scale_percent=150), 600, None, logo_input_index=1
+    )
+    clamped, _ = build_final_video_filter(
+        RenderSettings(logo_scale_percent=999), 600, None, logo_input_index=1
+    )
+    assert "scale=w=360:h=360" in larger
+    assert "scale=w=720:h=720" in clamped

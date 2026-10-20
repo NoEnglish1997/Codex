@@ -21,6 +21,7 @@ class AppSettings:
     video_encoder: str = VideoEncoder.AUTO.value
     mirror_second_clip: bool = True
     subtitle_font_name: str = "Microsoft YaHei"
+    logo_scale_percent: int = 100
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
 
@@ -56,6 +57,10 @@ class AppSettings:
         font_name = str(raw.get("subtitle_font_name", defaults.subtitle_font_name)).strip()
         if not font_name or len(font_name) > 128 or "\n" in font_name or "\r" in font_name:
             font_name = defaults.subtitle_font_name
+        try:
+            logo_scale = min(300, max(10, int(raw.get("logo_scale_percent", defaults.logo_scale_percent))))
+        except (TypeError, ValueError):
+            logo_scale = defaults.logo_scale_percent
         return cls(
             output_dir=str(output),
             interpolation_mode=interpolation,
@@ -65,6 +70,7 @@ class AppSettings:
             video_encoder=encoder,
             mirror_second_clip=mirror_second,
             subtitle_font_name=font_name,
+            logo_scale_percent=logo_scale,
             ffmpeg_path=str(raw.get("ffmpeg_path", "") or ""),
             ffprobe_path=str(raw.get("ffprobe_path", "") or ""),
         )

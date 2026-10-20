@@ -143,6 +143,9 @@ def build_final_video_filter(
     ]
     current = "base"
     if logo_input_index is not None:
+        scale_percent = min(300, max(10, settings.logo_scale_percent))
+        logo_width = max(1, round(settings.logo_max_width * scale_percent / 100))
+        logo_height = max(1, round(settings.logo_max_height * scale_percent / 100))
         start_index = max(0, settings.logo_start_frame - 1)
         travel_frames = max(1, total_frames - start_index - 1)
         progress = f"clip((n-{start_index})/{travel_frames},0,1)"
@@ -151,7 +154,7 @@ def build_final_video_filter(
         )
         y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
         chains.append(
-            f"[{logo_input_index}:v]scale=w={settings.logo_max_width}:h={settings.logo_max_height}:"
+            f"[{logo_input_index}:v]scale=w={logo_width}:h={logo_height}:"
             "force_original_aspect_ratio=decrease,format=rgba,setpts=PTS-STARTPTS[logo]"
         )
         chains.append(
