@@ -685,6 +685,7 @@ class Renderer:
                 "subtitle_font_name": job.settings.subtitle_style.font_name,
                 "logo_start_frame": job.settings.logo_start_frame if job.logo_path else None,
                 "logo_scale_percent": job.settings.logo_scale_percent if job.logo_path else None,
+                "logo_opacity_percent": job.settings.logo_opacity_percent if job.logo_path else None,
             },
             "timeline": {
                 "clip_frames": list(timeline.frame_counts),

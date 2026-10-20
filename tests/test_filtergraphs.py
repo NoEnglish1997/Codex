@@ -93,3 +93,14 @@ def test_logo_scale_percentage_changes_bounding_box_and_is_clamped():
     )
     assert "scale=w=360:h=360" in larger
     assert "scale=w=720:h=720" in clamped
+
+
+def test_logo_opacity_percentage_controls_alpha_and_is_clamped():
+    translucent, _ = build_final_video_filter(
+        RenderSettings(logo_opacity_percent=35), 600, None, logo_input_index=1
+    )
+    invisible, _ = build_final_video_filter(
+        RenderSettings(logo_opacity_percent=-10), 600, None, logo_input_index=1
+    )
+    assert "colorchannelmixer=aa=0.350000" in translucent
+    assert "colorchannelmixer=aa=0.000000" in invisible

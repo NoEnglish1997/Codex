@@ -99,6 +99,7 @@ class RenderSettings:
     logo_max_width: int = 240
     logo_max_height: int = 240
     logo_scale_percent: int = 100
+    logo_opacity_percent: int = 100
     logo_margin: int = 48
 
 

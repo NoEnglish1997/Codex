@@ -158,6 +158,11 @@ class MainWindow(QMainWindow):
         self.logo_scale.setSingleStep(10)
         self.logo_scale.setSuffix("%")
         self.logo_scale.setValue(self._settings.logo_scale_percent)
+        self.logo_opacity = QSpinBox()
+        self.logo_opacity.setRange(0, 100)
+        self.logo_opacity.setSingleStep(5)
+        self.logo_opacity.setSuffix("%")
+        self.logo_opacity.setValue(self._settings.logo_opacity_percent)
         self.music_edit = QLineEdit()
         self.music_edit.setReadOnly(True)
         self.music_info = QLabel("无配乐")
@@ -181,7 +186,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cover_edit, 0, 1)
         layout.addWidget(cover_button, 0, 2)
         layout.addWidget(clear_cover, 0, 3)
-        layout.addWidget(self.cover_preview, 0, 4, 5, 1)
+        layout.addWidget(self.cover_preview, 0, 4, 6, 1)
         layout.addWidget(QLabel("移动 Logo（图片）"), 1, 0)
         layout.addWidget(self.logo_edit, 1, 1)
         layout.addWidget(logo_button, 1, 2)
@@ -189,15 +194,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Logo 缩放"), 2, 0)
         layout.addWidget(self.logo_scale, 2, 1)
         layout.addWidget(QLabel("100% = 默认最大 240×240"), 2, 2, 1, 2)
-        layout.addWidget(QLabel("字幕（SRT/ASS）"), 3, 0)
-        layout.addWidget(self.subtitle_edit, 3, 1)
-        layout.addWidget(subtitle_button, 3, 2)
-        layout.addWidget(clear_subtitle, 3, 3)
-        layout.addWidget(QLabel("背景音乐"), 4, 0)
-        layout.addWidget(self.music_edit, 4, 1)
-        layout.addWidget(music_button, 4, 2)
-        layout.addWidget(clear_music, 4, 3)
-        layout.addWidget(self.music_info, 5, 1, 1, 3)
+        layout.addWidget(QLabel("Logo 透明度"), 3, 0)
+        layout.addWidget(self.logo_opacity, 3, 1)
+        layout.addWidget(QLabel("0% = 完全透明，100% = 不透明"), 3, 2, 1, 2)
+        layout.addWidget(QLabel("字幕（SRT/ASS）"), 4, 0)
+        layout.addWidget(self.subtitle_edit, 4, 1)
+        layout.addWidget(subtitle_button, 4, 2)
+        layout.addWidget(clear_subtitle, 4, 3)
+        layout.addWidget(QLabel("背景音乐"), 5, 0)
+        layout.addWidget(self.music_edit, 5, 1)
+        layout.addWidget(music_button, 5, 2)
+        layout.addWidget(clear_music, 5, 3)
+        layout.addWidget(self.music_info, 6, 1, 1, 3)
         return group
 
     def _build_settings_group(self) -> QGroupBox:
@@ -463,6 +471,7 @@ class MainWindow(QMainWindow):
             video_encoder=VideoEncoder(self.encoder_combo.currentData()),
             mirror_second_clip=self.mirror_second_clip.isChecked(),
             logo_scale_percent=self.logo_scale.value(),
+            logo_opacity_percent=self.logo_opacity.value(),
             subtitle_enabled=self.subtitle_enabled.isChecked(),
             subtitle_style=SubtitleStyle(
                 font_name=self.font_combo.currentFont().family(),
@@ -538,6 +547,7 @@ class MainWindow(QMainWindow):
             mirror_second_clip=settings.mirror_second_clip,
             subtitle_font_name=settings.subtitle_style.font_name,
             logo_scale_percent=settings.logo_scale_percent,
+            logo_opacity_percent=settings.logo_opacity_percent,
             ffmpeg_path=self.ffmpeg_edit.text(),
             ffprobe_path=self.ffprobe_edit.text(),
         )

@@ -18,6 +18,7 @@ def test_settings_round_trip_is_atomic(tmp_path):
         mirror_second_clip=False,
         subtitle_font_name="SimHei",
         logo_scale_percent=175,
+        logo_opacity_percent=65,
         ffmpeg_path="C:/工具/ffmpeg.exe",
         ffprobe_path="C:/工具/ffprobe.exe",
     )
@@ -47,6 +48,7 @@ def test_invalid_values_are_sanitized(tmp_path):
             "mirror_second_clip": "yes",
             "subtitle_font_name": "bad\nfont",
             "logo_scale_percent": 999,
+            "logo_opacity_percent": -20,
         }),
         encoding="utf-8",
     )
@@ -56,4 +58,5 @@ def test_invalid_values_are_sanitized(tmp_path):
     assert settings.mirror_second_clip is True
     assert settings.subtitle_font_name == "Microsoft YaHei"
     assert settings.logo_scale_percent == 300
+    assert settings.logo_opacity_percent == 0
     assert settings.output_dir != str(tmp_path / "missing")

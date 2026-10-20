@@ -144,6 +144,7 @@ def build_final_video_filter(
     current = "base"
     if logo_input_index is not None:
         scale_percent = min(300, max(10, settings.logo_scale_percent))
+        opacity = min(100, max(0, settings.logo_opacity_percent)) / 100
         logo_width = max(1, round(settings.logo_max_width * scale_percent / 100))
         logo_height = max(1, round(settings.logo_max_height * scale_percent / 100))
         start_index = max(0, settings.logo_start_frame - 1)
@@ -155,7 +156,8 @@ def build_final_video_filter(
         y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
         chains.append(
             f"[{logo_input_index}:v]scale=w={logo_width}:h={logo_height}:"
-            "force_original_aspect_ratio=decrease,format=rgba,setpts=PTS-STARTPTS[logo]"
+            "force_original_aspect_ratio=decrease,format=rgba,"
+            f"colorchannelmixer=aa={opacity:.6f},setpts=PTS-STARTPTS[logo]"
         )
         chains.append(
             f"[{current}][logo]overlay=x='{x}':y='{y}':enable='gte(n,{start_index})':"

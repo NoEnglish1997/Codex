@@ -100,6 +100,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
         music_short_policy=MusicShortPolicy.LOOP,
         video_encoder=VideoEncoder.X264,
         logo_scale_percent=150,
+        logo_opacity_percent=80,
     )
     job = RenderJob(
         video_items=(
@@ -138,6 +139,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
     assert report["logo"] == media["logo"].name
     assert report["settings"]["mirrored_clip_indices"] == [2]
     assert report["settings"]["logo_scale_percent"] == 150
+    assert report["settings"]["logo_opacity_percent"] == 80
 
     pure_second_body_frame = report["timeline"]["transition_offsets_frames"][0] + 65
     pure_second_output_frame = report["timeline"]["cover_frames"] + pure_second_body_frame

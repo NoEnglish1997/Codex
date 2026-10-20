@@ -127,6 +127,7 @@ def inspect_capabilities(tools: ToolPaths) -> FFmpegCapabilities:
         "minterpolate": {"minterpolate"},
         "模糊滤镜": {"gblur", "boxblur"},
         "overlay": {"overlay"},
+        "Logo 透明度": {"colorchannelmixer"},
         "字幕/libass": {"subtitles", "ass"},
         "libx264": {"libx264"},
     }

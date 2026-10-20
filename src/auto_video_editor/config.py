@@ -22,6 +22,7 @@ class AppSettings:
     mirror_second_clip: bool = True
     subtitle_font_name: str = "Microsoft YaHei"
     logo_scale_percent: int = 100
+    logo_opacity_percent: int = 100
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
 
@@ -61,6 +62,13 @@ class AppSettings:
             logo_scale = min(300, max(10, int(raw.get("logo_scale_percent", defaults.logo_scale_percent))))
         except (TypeError, ValueError):
             logo_scale = defaults.logo_scale_percent
+        try:
+            logo_opacity = min(
+                100,
+                max(0, int(raw.get("logo_opacity_percent", defaults.logo_opacity_percent))),
+            )
+        except (TypeError, ValueError):
+            logo_opacity = defaults.logo_opacity_percent
         return cls(
             output_dir=str(output),
             interpolation_mode=interpolation,
@@ -71,6 +79,7 @@ class AppSettings:
             mirror_second_clip=mirror_second,
             subtitle_font_name=font_name,
             logo_scale_percent=logo_scale,
+            logo_opacity_percent=logo_opacity,
             ffmpeg_path=str(raw.get("ffmpeg_path", "") or ""),
             ffprobe_path=str(raw.get("ffprobe_path", "") or ""),
         )
