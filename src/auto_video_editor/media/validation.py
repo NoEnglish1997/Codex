@@ -9,6 +9,7 @@ from ..utils.paths import sanitize_output_filename
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+LOGO_EXTENSIONS = COVER_EXTENSIONS
 SUBTITLE_EXTENSIONS = {".srt", ".ass"}
 MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
 
@@ -52,6 +53,10 @@ def validate_render_job(job: RenderJob) -> list[ValidationIssue]:
             issues.append(ValidationIssue("video_too_short", f"{item.display_name} 短于 2 秒，无法安全叠化。"))
     if job.cover_path:
         issue = _path_issue(job.cover_path, "cover_path", "封面", COVER_EXTENSIONS)
+        if issue:
+            issues.append(issue)
+    if job.logo_path:
+        issue = _path_issue(job.logo_path, "logo_path", "Logo", LOGO_EXTENSIONS)
         if issue:
             issues.append(issue)
     if job.subtitle_path:

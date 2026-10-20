@@ -53,6 +53,12 @@ def test_native_vertical_uses_fast_aspect_path():
     assert "crop=1440:2560" in graph
 
 
+def test_second_clip_can_be_mirrored_before_canvas_composition():
+    graph = build_normalization_filter(_probe(), RenderSettings(), horizontal_flip=True)
+    assert ",hflip," in graph
+    assert graph.index("hflip") < graph.index("split=2")
+
+
 def test_xfade_uses_integer_frame_offsets():
     graph, label = build_xfade_filtergraph([600, 600, 600], RenderSettings())
     assert "duration=1.000000000:offset=9.000000000" in graph
@@ -67,3 +73,12 @@ def test_subtitle_filter_is_omitted_or_included():
     assert "subtitles=" not in without
     assert "subtitles=" in with_subtitles
     assert "C\\:" in with_subtitles
+
+
+def test_logo_moves_diagonally_from_top_right_to_bottom_left_after_five_frames():
+    graph, label = build_final_video_filter(RenderSettings(), 600, None, logo_input_index=1)
+    assert "[1:v]scale=w=240:h=240" in graph
+    assert "enable='gte(n,4)'" in graph
+    assert "x='W-w-48-(W-w-96)*clip((n-4)/595,0,1)'" in graph
+    assert "y='48+(H-h-96)*clip((n-4)/595,0,1)'" in graph
+    assert label == "[vout]"

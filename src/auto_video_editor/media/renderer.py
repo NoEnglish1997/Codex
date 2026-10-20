@@ -234,6 +234,11 @@ class Renderer:
             cover_probe = probe_media(job.cover_path, self.capabilities.ffprobe_path)
             if not cover_probe.has_video or cover_probe.width <= 0 or cover_probe.height <= 0:
                 raise RenderError("封面图片无法解码。")
+        if job.logo_path:
+            logo_probe = probe_media(job.logo_path, self.capabilities.ffprobe_path)
+            if not logo_probe.has_video or logo_probe.width <= 0 or logo_probe.height <= 0:
+                raise RenderError("Logo 图片无法解码。")
+            log(f"Logo：{job.logo_path.name}，{logo_probe.width}×{logo_probe.height}")
         if job.music_path:
             music_probe = probe_media(job.music_path, self.capabilities.ffprobe_path)
             if not music_probe.has_audio:
@@ -265,7 +270,12 @@ class Renderer:
             self._check_cancel(token)
             assert item.probe is not None
             output = temporary_dir / f"clip_{index + 1:04d}.mp4"
-            video_filter = build_normalization_filter(item.probe, job.settings)
+            mirror = job.settings.mirror_second_clip and index == 1
+            video_filter = build_normalization_filter(
+                item.probe,
+                job.settings,
+                horizontal_flip=mirror,
+            )
             args = [
                 str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", "-i", str(item.source_path),
                 "-map", "0:v:0", "-vf", video_filter, "-an",
@@ -294,7 +304,8 @@ class Renderer:
                 raise RenderError(f"标准化结果不符合固定输出规格：{item.display_name}")
             outputs.append(output)
             counts.append(normalized_probe.frame_count)
-            log(f"标准化完成：{item.display_name}，实测 {normalized_probe.frame_count} 帧。")
+            mirror_note = "，已水平镜像" if mirror else ""
+            log(f"标准化完成：{item.display_name}，实测 {normalized_probe.frame_count} 帧{mirror_note}。")
             if job.settings.source_audio_mode == SourceAudioMode.MIX:
                 audio = temporary_dir / f"audio_{index + 1:04d}.wav"
                 duration = normalized_probe.frame_count / job.settings.fps
@@ -465,10 +476,20 @@ class Renderer:
         log: LogCallback,
     ) -> str:
         audio_plan = build_audio_plan(job, timeline)
+        logo_index: int | None = None
         source_index: int | None = None
         music_index: int | None = None
         inputs = ["-i", str(visual_video)]
         next_index = 1
+        if job.logo_path is not None:
+            logo_index = next_index
+            inputs.extend(
+                [
+                    "-loop", "1", "-framerate", str(job.settings.fps),
+                    "-i", str(job.logo_path),
+                ]
+            )
+            next_index += 1
         if body_audio is not None:
             source_index = next_index
             inputs.extend(["-i", str(body_audio)])
@@ -478,7 +499,12 @@ class Renderer:
             if audio_plan.loop_music:
                 inputs.extend(["-stream_loop", "-1"])
             inputs.extend(["-i", str(job.music_path)])
-        video_graph, video_label = build_final_video_filter(job.settings, timeline.total_frames, subtitle_path)
+        video_graph, video_label = build_final_video_filter(
+            job.settings,
+            timeline.total_frames,
+            subtitle_path,
+            logo_input_index=logo_index,
+        )
         audio_graph = build_final_audio_filtergraph(
             audio_plan,
             source_input_index=source_index,
@@ -640,6 +666,7 @@ class Renderer:
         payload = {
             "output": output_path.name,
             "cover": cover_path.name if cover_path else None,
+            "logo": job.logo_path.name if job.logo_path else None,
             "source_order": [item.display_name for item in job.video_items],
             "encoder": encoder,
             "settings": {
@@ -651,6 +678,12 @@ class Renderer:
                 "interpolation_mode": job.settings.interpolation_mode.value,
                 "source_audio_mode": job.settings.source_audio_mode.value,
                 "music_volume": job.settings.music_volume,
+                "mirror_second_clip": job.settings.mirror_second_clip,
+                "mirrored_clip_indices": [2]
+                if job.settings.mirror_second_clip and len(job.video_items) >= 2
+                else [],
+                "subtitle_font_name": job.settings.subtitle_style.font_name,
+                "logo_start_frame": job.settings.logo_start_frame if job.logo_path else None,
             },
             "timeline": {
                 "clip_frames": list(timeline.frame_counts),

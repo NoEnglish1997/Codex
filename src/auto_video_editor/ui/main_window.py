@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -55,7 +55,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V1.0")
+        self.setWindowTitle("自动视频剪辑 V1.1")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_optional_group(self) -> QGroupBox:
-        group = QGroupBox("封面、字幕与配乐")
+        group = QGroupBox("封面、Logo、字幕与配乐")
         layout = QGridLayout(group)
         self.cover_edit = QLineEdit()
         self.cover_edit.setReadOnly(True)
@@ -151,35 +151,45 @@ class MainWindow(QMainWindow):
         self.cover_preview.setStyleSheet("border: 1px solid palette(mid);")
         self.subtitle_edit = QLineEdit()
         self.subtitle_edit.setReadOnly(True)
+        self.logo_edit = QLineEdit()
+        self.logo_edit.setReadOnly(True)
         self.music_edit = QLineEdit()
         self.music_edit.setReadOnly(True)
         self.music_info = QLabel("无配乐")
         cover_button = QPushButton("选择封面…")
+        logo_button = QPushButton("选择 Logo…")
         subtitle_button = QPushButton("选择字幕…")
         music_button = QPushButton("选择配乐…")
         clear_cover = QPushButton("清除")
+        clear_logo = QPushButton("清除")
         clear_subtitle = QPushButton("清除")
         clear_music = QPushButton("清除")
         cover_button.clicked.connect(self._choose_cover)
+        logo_button.clicked.connect(self._choose_logo)
         subtitle_button.clicked.connect(self._choose_subtitle)
         music_button.clicked.connect(self._choose_music)
         clear_cover.clicked.connect(lambda: self._set_optional_path(self.cover_edit, "", "cover"))
+        clear_logo.clicked.connect(lambda: self._set_optional_path(self.logo_edit, "", "logo"))
         clear_subtitle.clicked.connect(lambda: self._set_optional_path(self.subtitle_edit, "", "subtitle"))
         clear_music.clicked.connect(lambda: self._set_optional_path(self.music_edit, "", "music"))
         layout.addWidget(QLabel("封面（精确 5 帧）"), 0, 0)
         layout.addWidget(self.cover_edit, 0, 1)
         layout.addWidget(cover_button, 0, 2)
         layout.addWidget(clear_cover, 0, 3)
-        layout.addWidget(self.cover_preview, 0, 4, 3, 1)
-        layout.addWidget(QLabel("字幕（SRT/ASS）"), 1, 0)
-        layout.addWidget(self.subtitle_edit, 1, 1)
-        layout.addWidget(subtitle_button, 1, 2)
-        layout.addWidget(clear_subtitle, 1, 3)
-        layout.addWidget(QLabel("背景音乐"), 2, 0)
-        layout.addWidget(self.music_edit, 2, 1)
-        layout.addWidget(music_button, 2, 2)
-        layout.addWidget(clear_music, 2, 3)
-        layout.addWidget(self.music_info, 3, 1, 1, 3)
+        layout.addWidget(self.cover_preview, 0, 4, 4, 1)
+        layout.addWidget(QLabel("移动 Logo（图片）"), 1, 0)
+        layout.addWidget(self.logo_edit, 1, 1)
+        layout.addWidget(logo_button, 1, 2)
+        layout.addWidget(clear_logo, 1, 3)
+        layout.addWidget(QLabel("字幕（SRT/ASS）"), 2, 0)
+        layout.addWidget(self.subtitle_edit, 2, 1)
+        layout.addWidget(subtitle_button, 2, 2)
+        layout.addWidget(clear_subtitle, 2, 3)
+        layout.addWidget(QLabel("背景音乐"), 3, 0)
+        layout.addWidget(self.music_edit, 3, 1)
+        layout.addWidget(music_button, 3, 2)
+        layout.addWidget(clear_music, 3, 3)
+        layout.addWidget(self.music_info, 4, 1, 1, 3)
         return group
 
     def _build_settings_group(self) -> QGroupBox:
@@ -215,7 +225,10 @@ class MainWindow(QMainWindow):
 
         self.subtitle_enabled = QCheckBox("烧录硬字幕")
         self.subtitle_enabled.setChecked(True)
+        self.mirror_second_clip = QCheckBox("第 2 段视频水平镜像")
+        self.mirror_second_clip.setChecked(self._settings.mirror_second_clip)
         self.font_combo = QFontComboBox()
+        self.font_combo.setCurrentFont(QFont(self._settings.subtitle_font_name))
         self.font_size = QSpinBox()
         self.font_size.setRange(24, 140)
         self.font_size.setValue(68)
@@ -242,16 +255,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.encoder_combo, 2, 3)
         layout.addWidget(QLabel("配乐音量（片尾淡出1秒）"), 3, 0)
         layout.addWidget(volume_widget, 3, 1)
-        layout.addWidget(self.subtitle_enabled, 3, 2)
-        layout.addWidget(self.font_combo, 3, 3)
-        layout.addWidget(QLabel("字幕字号"), 4, 0)
-        layout.addWidget(self.font_size, 4, 1)
-        layout.addWidget(QLabel("描边宽度"), 4, 2)
-        layout.addWidget(self.outline_width, 4, 3)
-        layout.addWidget(QLabel("底部边距"), 5, 0)
-        layout.addWidget(self.subtitle_margin, 5, 1)
-        layout.addWidget(self.primary_color_button, 5, 2)
-        layout.addWidget(self.outline_color_button, 5, 3)
+        layout.addWidget(self.mirror_second_clip, 3, 2, 1, 2)
+        layout.addWidget(self.subtitle_enabled, 4, 0)
+        layout.addWidget(QLabel("字幕字体"), 4, 1)
+        layout.addWidget(self.font_combo, 4, 2, 1, 2)
+        layout.addWidget(QLabel("字幕字号"), 5, 0)
+        layout.addWidget(self.font_size, 5, 1)
+        layout.addWidget(QLabel("描边宽度"), 5, 2)
+        layout.addWidget(self.outline_width, 5, 3)
+        layout.addWidget(QLabel("底部边距"), 6, 0)
+        layout.addWidget(self.subtitle_margin, 6, 1)
+        layout.addWidget(self.primary_color_button, 6, 2)
+        layout.addWidget(self.outline_color_button, 6, 3)
         return group
 
     def _build_output_group(self) -> QGroupBox:
@@ -357,6 +372,11 @@ class MainWindow(QMainWindow):
         if path:
             self._set_optional_path(self.cover_edit, path, "cover")
 
+    def _choose_logo(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "选择 Logo", "", "图片 (*.jpg *.jpeg *.png *.webp)")
+        if path:
+            self._set_optional_path(self.logo_edit, path, "logo")
+
     def _choose_subtitle(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择字幕", "", "字幕 (*.srt *.ass)")
         if path:
@@ -433,6 +453,7 @@ class MainWindow(QMainWindow):
             music_short_policy=MusicShortPolicy(self.music_policy_combo.currentData()),
             music_volume=self.volume_slider.value() / 100,
             video_encoder=VideoEncoder(self.encoder_combo.currentData()),
+            mirror_second_clip=self.mirror_second_clip.isChecked(),
             subtitle_enabled=self.subtitle_enabled.isChecked(),
             subtitle_style=SubtitleStyle(
                 font_name=self.font_combo.currentFont().family(),
@@ -455,6 +476,7 @@ class MainWindow(QMainWindow):
             output_dir=Path(self.output_dir_edit.text()).expanduser(),
             output_filename=filename,
             settings=self._render_settings(),
+            logo_path=Path(self.logo_edit.text()) if self.logo_edit.text() else None,
         )
 
     def start_render(self) -> None:
@@ -504,6 +526,8 @@ class MainWindow(QMainWindow):
             music_short_policy=settings.music_short_policy.value,
             music_volume=settings.music_volume,
             video_encoder=settings.video_encoder.value,
+            mirror_second_clip=settings.mirror_second_clip,
+            subtitle_font_name=settings.subtitle_style.font_name,
             ffmpeg_path=self.ffmpeg_edit.text(),
             ffprobe_path=self.ffprobe_edit.text(),
         )

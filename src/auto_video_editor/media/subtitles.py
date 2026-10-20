@@ -64,6 +64,11 @@ def _escape_ass_text(lines: list[str]) -> str:
     return text.replace("<i>", r"{\i1}").replace("</i>", r"{\i0}").replace("<b>", r"{\b1}").replace("</b>", r"{\b0}")
 
 
+def _safe_font_name(font_name: str) -> str:
+    value = font_name.replace("\r", " ").replace("\n", " ").replace(",", " ").strip()
+    return value or "Microsoft YaHei"
+
+
 def srt_to_ass(text: str, style: SubtitleStyle, offset_seconds: float) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     blocks = re.split(r"\n\s*\n", normalized) if normalized else []
@@ -90,6 +95,7 @@ def srt_to_ass(text: str, style: SubtitleStyle, offset_seconds: float) -> str:
         )
     if not events:
         raise SubtitleError("字幕中没有可用事件。")
+    font_name = _safe_font_name(style.font_name)
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1440
@@ -99,7 +105,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style.font_name},{style.font_size},{_ass_color(style.primary_color)},&H000000FF,{_ass_color(style.outline_color)},&H64000000,0,0,0,0,100,100,0,0,1,{style.outline_width},0,2,60,60,{style.margin_bottom},1
+Style: Default,{font_name},{style.font_size},{_ass_color(style.primary_color)},&H000000FF,{_ass_color(style.outline_color)},&H64000000,0,0,0,0,100,100,0,0,1,{style.outline_width},0,2,60,60,{style.margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -134,6 +140,22 @@ def shift_ass(text: str, offset_seconds: float) -> str:
     return "\n".join(output)
 
 
+def apply_ass_font(text: str, font_name: str) -> str:
+    """Override ASS style fonts while preserving every other style field."""
+    safe_name = _safe_font_name(font_name)
+    output: list[str] = []
+    for line in text.split("\n"):
+        if line.lstrip().startswith("Style:"):
+            leading = line[: len(line) - len(line.lstrip())]
+            value = line.lstrip()[len("Style:"):]
+            fields = value.split(",")
+            if len(fields) >= 2:
+                fields[1] = safe_name
+                line = f"{leading}Style:{','.join(fields)}"
+        output.append(line)
+    return "\n".join(output)
+
+
 def prepare_subtitles(
     source_path: Path,
     destination_dir: Path,
@@ -145,7 +167,7 @@ def prepare_subtitles(
     if source_path.suffix.lower() == ".srt":
         content = srt_to_ass(decoded.text, style, offset_seconds)
     elif source_path.suffix.lower() == ".ass":
-        content = shift_ass(decoded.text, offset_seconds) if offset_seconds else shift_ass(decoded.text, 0.0)
+        content = apply_ass_font(shift_ass(decoded.text, offset_seconds), style.font_name)
     else:
         raise SubtitleError(f"不支持的字幕格式：{source_path.suffix}")
     destination_dir.mkdir(parents=True, exist_ok=True)

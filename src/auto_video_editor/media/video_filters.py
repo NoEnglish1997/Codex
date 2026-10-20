@@ -62,11 +62,17 @@ def build_canvas_filter(
     )
 
 
-def build_normalization_filter(probe: ProbeInfo, settings: RenderSettings) -> str:
+def build_normalization_filter(
+    probe: ProbeInfo,
+    settings: RenderSettings,
+    *,
+    horizontal_flip: bool = False,
+) -> str:
     target_frames = max(1, int(probe.duration_seconds * settings.fps + 0.5))
+    flip = "hflip," if horizontal_flip else ""
     prefix = (
         "setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=0.100000000,"
-        f"{_rate_filter(probe, settings)},"
+        f"{_rate_filter(probe, settings)},{flip}"
     )
     return build_canvas_filter(
         probe.display_width or probe.width,
@@ -129,17 +135,34 @@ def build_final_video_filter(
     settings: RenderSettings,
     total_frames: int,
     subtitle_path: Path | None,
+    logo_input_index: int | None = None,
 ) -> tuple[str, str]:
-    first = "[0:v]"
-    filters: list[str] = []
+    chains = [
+        f"[0:v]fps={settings.fps},trim=end_frame={total_frames},"
+        "setpts=PTS-STARTPTS[base]"
+    ]
+    current = "base"
+    if logo_input_index is not None:
+        start_index = max(0, settings.logo_start_frame - 1)
+        travel_frames = max(1, total_frames - start_index - 1)
+        progress = f"clip((n-{start_index})/{travel_frames},0,1)"
+        x = (
+            f"W-w-{settings.logo_margin}-(W-w-{settings.logo_margin * 2})*{progress}"
+        )
+        y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
+        chains.append(
+            f"[{logo_input_index}:v]scale=w={settings.logo_max_width}:h={settings.logo_max_height}:"
+            "force_original_aspect_ratio=decrease,format=rgba,setpts=PTS-STARTPTS[logo]"
+        )
+        chains.append(
+            f"[{current}][logo]overlay=x='{x}':y='{y}':enable='gte(n,{start_index})':"
+            "shortest=1[with_logo]"
+        )
+        current = "with_logo"
     if subtitle_path is not None:
-        filters.append(f"subtitles=filename='{escape_filter_path(subtitle_path)}'")
-    filters.extend(
-        [
-            f"fps={settings.fps}",
-            f"trim=end_frame={total_frames}",
-            "setpts=PTS-STARTPTS",
-            "format=yuv420p",
-        ]
-    )
-    return f"{first}{','.join(filters)}[vout]", "[vout]"
+        chains.append(
+            f"[{current}]subtitles=filename='{escape_filter_path(subtitle_path)}'[with_subtitles]"
+        )
+        current = "with_subtitles"
+    chains.append(f"[{current}]format=yuv420p[vout]")
+    return ";".join(chains), "[vout]"

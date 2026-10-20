@@ -15,6 +15,8 @@ def test_settings_round_trip_is_atomic(tmp_path):
         music_short_policy="silence",
         music_volume=0.42,
         video_encoder="x264",
+        mirror_second_clip=False,
+        subtitle_font_name="SimHei",
         ffmpeg_path="C:/工具/ffmpeg.exe",
         ffprobe_path="C:/工具/ffprobe.exe",
     )
@@ -41,10 +43,14 @@ def test_invalid_values_are_sanitized(tmp_path):
             "output_dir": str(tmp_path / "missing"),
             "interpolation_mode": "magic",
             "music_volume": 4,
+            "mirror_second_clip": "yes",
+            "subtitle_font_name": "bad\nfont",
         }),
         encoding="utf-8",
     )
     settings = SettingsStore(path).load().settings
     assert settings.interpolation_mode == "motion"
     assert settings.music_volume == 1.0
+    assert settings.mirror_second_clip is True
+    assert settings.subtitle_font_name == "Microsoft YaHei"
     assert settings.output_dir != str(tmp_path / "missing")

@@ -34,3 +34,11 @@ def test_output_is_sanitized_and_never_overwritten(tmp_path):
     job = RenderJob((item,), None, None, None, tmp_path, "bad:name.mp4")
     codes = {issue.code for issue in validate_render_job(job)}
     assert {"output_name_sanitized", "output_exists"}.issubset(codes)
+
+
+def test_missing_logo_is_rejected(tmp_path):
+    item = _video(tmp_path / "source.mp4")
+    job = RenderJob(
+        (item,), None, None, None, tmp_path, "out.mp4", logo_path=tmp_path / "missing.png"
+    )
+    assert "logo_path" in {issue.code for issue in validate_render_job(job)}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from auto_video_editor.media.subtitles import SubtitleError, shift_ass, srt_to_ass
+from auto_video_editor.media.subtitles import SubtitleError, apply_ass_font, shift_ass, srt_to_ass
 from auto_video_editor.models import SubtitleStyle
 
 
@@ -28,6 +28,13 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Fancy,,0,0,0,,Hello
     shifted = shift_ass(source, 5 / 60)
     assert "Style: Fancy,Arial,42" in shifted
     assert "0:00:01.08,0:00:02.08,Fancy" in shifted
+
+
+def test_ass_font_can_be_overridden_without_changing_other_style_fields():
+    source = "Style: Fancy,Arial,42,&H00FFFFFF\nStyle: Alt,Times New Roman,36,&H00FFFFFF"
+    changed = apply_ass_font(source, "Microsoft YaHei")
+    assert "Style: Fancy,Microsoft YaHei,42,&H00FFFFFF" in changed
+    assert "Style: Alt,Microsoft YaHei,36,&H00FFFFFF" in changed
 
 
 def test_invalid_srt_is_rejected():

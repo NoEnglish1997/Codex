@@ -92,8 +92,13 @@ class RenderSettings:
     music_volume: float = 0.35
     music_fadeout_seconds: float = 1.0
     video_encoder: VideoEncoder = VideoEncoder.AUTO
+    mirror_second_clip: bool = True
     subtitle_enabled: bool = True
     subtitle_style: SubtitleStyle = field(default_factory=SubtitleStyle)
+    logo_start_frame: int = 5
+    logo_max_width: int = 240
+    logo_max_height: int = 240
+    logo_margin: int = 48
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,7 @@ class RenderJob:
     output_dir: Path
     output_filename: str
     settings: RenderSettings = field(default_factory=RenderSettings)
+    logo_path: Path | None = None
 
 
 @dataclass(frozen=True)

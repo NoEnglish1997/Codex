@@ -19,6 +19,8 @@ class AppSettings:
     music_short_policy: str = MusicShortPolicy.LOOP.value
     music_volume: float = 0.35
     video_encoder: str = VideoEncoder.AUTO.value
+    mirror_second_clip: bool = True
+    subtitle_font_name: str = "Microsoft YaHei"
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
 
@@ -48,6 +50,12 @@ class AppSettings:
             volume = min(1.0, max(0.0, float(raw.get("music_volume", defaults.music_volume))))
         except (TypeError, ValueError):
             volume = defaults.music_volume
+        mirror_second = raw.get("mirror_second_clip", defaults.mirror_second_clip)
+        if not isinstance(mirror_second, bool):
+            mirror_second = defaults.mirror_second_clip
+        font_name = str(raw.get("subtitle_font_name", defaults.subtitle_font_name)).strip()
+        if not font_name or len(font_name) > 128 or "\n" in font_name or "\r" in font_name:
+            font_name = defaults.subtitle_font_name
         return cls(
             output_dir=str(output),
             interpolation_mode=interpolation,
@@ -55,6 +63,8 @@ class AppSettings:
             music_short_policy=music_policy,
             music_volume=volume,
             video_encoder=encoder,
+            mirror_second_clip=mirror_second,
+            subtitle_font_name=font_name,
             ffmpeg_path=str(raw.get("ffmpeg_path", "") or ""),
             ffprobe_path=str(raw.get("ffprobe_path", "") or ""),
         )

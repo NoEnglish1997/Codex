@@ -46,6 +46,22 @@ def _pixel_samples(ffmpeg: Path, video: Path, frames: tuple[int, ...], x: int, y
     return [stdout[index * size:(index + 1) * size] for index in range(len(frames))]
 
 
+def _is_red(sample: bytes) -> bool:
+    pixels = [sample[index:index + 3] for index in range(0, len(sample), 3)]
+    red = sum(pixel[0] for pixel in pixels) / len(pixels)
+    green = sum(pixel[1] for pixel in pixels) / len(pixels)
+    blue = sum(pixel[2] for pixel in pixels) / len(pixels)
+    return red > 180 and red > green + 100 and red > blue + 100
+
+
+def _is_blue(sample: bytes) -> bool:
+    pixels = [sample[index:index + 3] for index in range(0, len(sample), 3)]
+    red = sum(pixel[0] for pixel in pixels) / len(pixels)
+    green = sum(pixel[1] for pixel in pixels) / len(pixels)
+    blue = sum(pixel[2] for pixel in pixels) / len(pixels)
+    return blue > 180 and blue > red + 100 and blue > green + 100
+
+
 def _video_timestamps(ffprobe: Path, video: Path) -> list[float]:
     args = [
         str(ffprobe), "-v", "error", "-select_streams", "v:0", "-show_frames",
@@ -96,6 +112,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
         output_dir=output_dir,
         output_filename="集成:成片.mp4",
         settings=settings,
+        logo_path=media["logo"],
     )
     progress: list[tuple[str, int]] = []
     renderer = Renderer(ffmpeg_capabilities, cache_root=tmp_path / "cache")
@@ -117,6 +134,27 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
         media["square"].name,
     ]
     assert report["timeline"]["cover_frames"] == 5
+    assert report["logo"] == media["logo"].name
+    assert report["settings"]["mirrored_clip_indices"] == [2]
+
+    pure_second_body_frame = report["timeline"]["transition_offsets_frames"][0] + 65
+    pure_second_output_frame = report["timeline"]["cover_frames"] + pure_second_body_frame
+    (mirrored_left,) = _pixel_samples(
+        ffmpeg_capabilities.ffmpeg_path,
+        result.output_path,
+        (pure_second_output_frame,),
+        360,
+        1280,
+    )
+    (mirrored_right,) = _pixel_samples(
+        ffmpeg_capabilities.ffmpeg_path,
+        result.output_path,
+        (pure_second_output_frame,),
+        1080,
+        1280,
+    )
+    assert _is_blue(mirrored_left)
+    assert _is_red(mirrored_right)
 
     first, fifth, sixth = _pixel_samples(
         ffmpeg_capabilities.ffmpeg_path,
@@ -129,6 +167,23 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
     distance_to_first_video = sum(abs(a - b) for a, b in zip(fifth, sixth))
     assert distance_same_cover < 40
     assert distance_to_first_video > 80
+    before_logo, logo_at_start = _pixel_samples(
+        ffmpeg_capabilities.ffmpeg_path,
+        result.output_path,
+        (3, 4),
+        1272,
+        128,
+    )
+    assert not _is_red(before_logo)
+    assert _is_red(logo_at_start)
+    (logo_at_end,) = _pixel_samples(
+        ffmpeg_capabilities.ffmpeg_path,
+        result.output_path,
+        (result.timeline.total_frames - 1,),
+        168,
+        2432,
+    )
+    assert _is_red(logo_at_end)
     (corner,) = _pixel_samples(
         ffmpeg_capabilities.ffmpeg_path,
         result.output_path,

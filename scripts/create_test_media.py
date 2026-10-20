@@ -28,6 +28,7 @@ def create_test_media(output_dir: Path, ffmpeg: str = "ffmpeg", duration: float 
         "portrait": output_dir / "02 portrait silent.mp4",
         "square": output_dir / "03_square_audio.mp4",
         "cover": output_dir / "封面 image.png",
+        "logo": output_dir / "移动 Logo.png",
         "music": output_dir / "短音乐.wav",
         "long_music": output_dir / "长音乐.wav",
         "subtitle": output_dir / "字幕.srt",
@@ -50,7 +51,9 @@ def create_test_media(output_dir: Path, ffmpeg: str = "ffmpeg", duration: float 
     _run(
         [
             ffmpeg, "-hide_banner", "-y",
-            "-f", "lavfi", "-i", f"testsrc2=size=180x320:rate=30:duration={duration}",
+            "-f", "lavfi", "-i",
+            f"color=c=blue:size=180x320:rate=30:duration={duration},"
+            "drawbox=x=0:y=0:w=90:h=320:color=red:t=fill",
             *common_video, "-an", str(files["portrait"]),
         ]
     )
@@ -66,6 +69,12 @@ def create_test_media(output_dir: Path, ffmpeg: str = "ffmpeg", duration: float 
         [
             ffmpeg, "-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=0x20a050:s=320x180:d=0.1",
             "-frames:v", "1", "-update", "1", str(files["cover"]),
+        ]
+    )
+    _run(
+        [
+            ffmpeg, "-hide_banner", "-y", "-f", "lavfi", "-i", "color=c=red:s=120x80:d=0.1",
+            "-frames:v", "1", "-update", "1", str(files["logo"]),
         ]
     )
     _run(
