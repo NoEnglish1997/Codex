@@ -30,6 +30,7 @@ def create_test_media(output_dir: Path, ffmpeg: str = "ffmpeg", duration: float 
         "cover": output_dir / "封面 image.png",
         "logo": output_dir / "移动 Logo.png",
         "music": output_dir / "短音乐.wav",
+        "music_mp3": output_dir / "批量背景音乐.mp3",
         "long_music": output_dir / "长音乐.wav",
         "subtitle": output_dir / "字幕.srt",
     }
@@ -81,6 +82,13 @@ def create_test_media(output_dir: Path, ffmpeg: str = "ffmpeg", duration: float 
         [
             ffmpeg, "-hide_banner", "-y", "-f", "lavfi", "-i",
             "sine=frequency=880:sample_rate=48000:duration=0.7", "-c:a", "pcm_s16le", str(files["music"]),
+        ]
+    )
+    _run(
+        [
+            ffmpeg, "-hide_banner", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=880:sample_rate=48000:duration=0.7", "-c:a", "libmp3lame", "-q:a", "4",
+            str(files["music_mp3"]),
         ]
     )
     files["subtitle"].write_text(

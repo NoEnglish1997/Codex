@@ -30,12 +30,16 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import SettingsStore
+from ..media.batch import batch_output_filename, scan_batch_root
 from ..media.ffmpeg_locator import detect_capabilities
 from ..media.ffprobe import ProbeError, probe_media
 from ..media.timeline import calculate_timeline
 from ..media.validation import VIDEO_EXTENSIONS, validate_render_job
 from ..models import (
     FFmpegCapabilities,
+    BatchFailure,
+    BatchRenderSummary,
+    BatchRenderTask,
     InterpolationMode,
     IssueSeverity,
     MusicShortPolicy,
@@ -47,7 +51,8 @@ from ..models import (
     VideoEncoder,
     VideoItem,
 )
-from ..utils.paths import sanitize_output_filename
+from ..utils.paths import config_dir, sanitize_output_filename
+from .batch_render_worker import BatchRenderWorker
 from .render_worker import RenderWorker
 from .video_list_widget import VideoListWidget
 
@@ -55,7 +60,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V1.1")
+        self.setWindowTitle("自动视频剪辑 V2.0")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -63,9 +68,13 @@ class MainWindow(QMainWindow):
         self._settings = loaded.settings
         self._capabilities: FFmpegCapabilities | None = None
         self._thread: QThread | None = None
-        self._worker: RenderWorker | None = None
+        self._worker: RenderWorker | BatchRenderWorker | None = None
         self._last_result: RenderResult | None = None
+        self._last_output_dir: Path | None = None
         self._close_after_render = False
+        self._active_mode: str | None = None
+        self._batch_prefix = self._settings.output_prefix
+        self._manual_filename = f"edited_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         self._primary_color = "#FFFFFF"
         self._outline_color = "#000000"
         self._build_ui()
@@ -83,10 +92,16 @@ class MainWindow(QMainWindow):
         header.setStyleSheet("font-size: 22px; font-weight: 600;")
         main.addWidget(header)
         main.addWidget(self._build_tools_group())
-        main.addWidget(self._build_video_group(), 2)
-        main.addWidget(self._build_optional_group())
+        main.addWidget(self._build_mode_group())
+        self.batch_group = self._build_batch_group()
+        main.addWidget(self.batch_group)
+        self.video_group = self._build_video_group()
+        main.addWidget(self.video_group, 2)
+        self.optional_group = self._build_optional_group()
+        main.addWidget(self.optional_group)
         main.addWidget(self._build_settings_group())
-        main.addWidget(self._build_output_group())
+        self.output_group = self._build_output_group()
+        main.addWidget(self.output_group)
         scroll.setWidget(self.config_widget)
 
         outer = QWidget(self)
@@ -95,6 +110,35 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(scroll, 1)
         outer_layout.addWidget(self._build_run_group())
         self.setCentralWidget(outer)
+        self._on_mode_changed()
+
+    def _build_mode_group(self) -> QGroupBox:
+        group = QGroupBox("工作模式")
+        layout = QHBoxLayout(group)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("批量文件夹（默认）", "batch")
+        self.mode_combo.addItem("手动单任务", "manual")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addWidget(QLabel("模式"))
+        layout.addWidget(self.mode_combo, 1)
+        return group
+
+    def _build_batch_group(self) -> QGroupBox:
+        group = QGroupBox("批量素材")
+        layout = QGridLayout(group)
+        self.batch_root_edit = QLineEdit(self._settings.batch_input_dir)
+        browse = QPushButton("选择总文件夹…")
+        browse.clicked.connect(self._choose_batch_root)
+        scan = QPushButton("扫描检查")
+        scan.clicked.connect(self.preview_batch)
+        self.batch_status = QLabel("请选择包含多个素材子文件夹的总目录。")
+        self.batch_status.setWordWrap(True)
+        layout.addWidget(QLabel("素材总目录"), 0, 0)
+        layout.addWidget(self.batch_root_edit, 0, 1)
+        layout.addWidget(browse, 0, 2)
+        layout.addWidget(scan, 0, 3)
+        layout.addWidget(self.batch_status, 1, 0, 1, 4)
+        return group
 
     def _build_tools_group(self) -> QGroupBox:
         group = QGroupBox("FFmpeg 环境")
@@ -182,7 +226,10 @@ class MainWindow(QMainWindow):
         clear_logo.clicked.connect(lambda: self._set_optional_path(self.logo_edit, "", "logo"))
         clear_subtitle.clicked.connect(lambda: self._set_optional_path(self.subtitle_edit, "", "subtitle"))
         clear_music.clicked.connect(lambda: self._set_optional_path(self.music_edit, "", "music"))
-        layout.addWidget(QLabel("封面（精确 5 帧）"), 0, 0)
+        cover_label = QLabel("封面（精确 5 帧）")
+        subtitle_label = QLabel("字幕（SRT/ASS）")
+        music_label = QLabel("背景音乐")
+        layout.addWidget(cover_label, 0, 0)
         layout.addWidget(self.cover_edit, 0, 1)
         layout.addWidget(cover_button, 0, 2)
         layout.addWidget(clear_cover, 0, 3)
@@ -197,15 +244,31 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Logo 透明度"), 3, 0)
         layout.addWidget(self.logo_opacity, 3, 1)
         layout.addWidget(QLabel("0% = 完全透明，100% = 不透明"), 3, 2, 1, 2)
-        layout.addWidget(QLabel("字幕（SRT/ASS）"), 4, 0)
+        layout.addWidget(subtitle_label, 4, 0)
         layout.addWidget(self.subtitle_edit, 4, 1)
         layout.addWidget(subtitle_button, 4, 2)
         layout.addWidget(clear_subtitle, 4, 3)
-        layout.addWidget(QLabel("背景音乐"), 5, 0)
+        layout.addWidget(music_label, 5, 0)
         layout.addWidget(self.music_edit, 5, 1)
         layout.addWidget(music_button, 5, 2)
         layout.addWidget(clear_music, 5, 3)
         layout.addWidget(self.music_info, 6, 1, 1, 3)
+        self.manual_asset_widgets = (
+            cover_label,
+            self.cover_edit,
+            cover_button,
+            clear_cover,
+            self.cover_preview,
+            subtitle_label,
+            self.subtitle_edit,
+            subtitle_button,
+            clear_subtitle,
+            music_label,
+            self.music_edit,
+            music_button,
+            clear_music,
+            self.music_info,
+        )
         return group
 
     def _build_settings_group(self) -> QGroupBox:
@@ -291,12 +354,13 @@ class MainWindow(QMainWindow):
         self.output_dir_edit = QLineEdit(self._settings.output_dir)
         browse = QPushButton("选择目录…")
         browse.clicked.connect(self._choose_output_dir)
-        self.filename_edit = QLineEdit(f"edited_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        self.output_name_label = QLabel("文件名")
+        self.filename_edit = QLineEdit(self._manual_filename)
         self.estimate_label = QLabel("预计总时长：请添加视频（最终以 FFprobe 实测为准）")
         layout.addWidget(QLabel("输出目录"), 0, 0)
         layout.addWidget(self.output_dir_edit, 0, 1)
         layout.addWidget(browse, 0, 2)
-        layout.addWidget(QLabel("文件名"), 1, 0)
+        layout.addWidget(self.output_name_label, 1, 0)
         layout.addWidget(self.filename_edit, 1, 1, 1, 2)
         layout.addWidget(self.estimate_label, 2, 0, 1, 3)
         return group
@@ -308,27 +372,77 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("开始剪辑")
         self.cancel_button = QPushButton("取消任务")
         self.open_button = QPushButton("打开输出文件夹")
+        self.download_log_button = QPushButton("下载日志…")
         self.cancel_button.setEnabled(False)
         self.open_button.setEnabled(False)
+        self.download_log_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_render)
         self.cancel_button.clicked.connect(self.cancel_render)
         self.open_button.clicked.connect(self.open_output_folder)
+        self.download_log_button.clicked.connect(self.download_logs)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.open_button)
+        buttons.addWidget(self.download_log_button)
         buttons.addStretch(1)
         self.stage_label = QLabel("就绪")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(1000)
+        # Keep the whole current run so “下载日志” never exports a truncated view.
+        self.log_view.setMaximumBlockCount(0)
         self.log_view.setMinimumHeight(130)
         layout.addLayout(buttons)
         layout.addWidget(self.stage_label)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.log_view)
         return group
+
+    def _on_mode_changed(self, *_args: object) -> None:
+        if not hasattr(self, "batch_group"):
+            return
+        mode = str(self.mode_combo.currentData())
+        if self._active_mode == "batch":
+            self._batch_prefix = self.filename_edit.text()
+        elif self._active_mode == "manual":
+            self._manual_filename = self.filename_edit.text()
+        batch = mode == "batch"
+        self.batch_group.setVisible(batch)
+        self.video_group.setVisible(not batch)
+        for widget in self.manual_asset_widgets:
+            widget.setVisible(not batch)
+        self.optional_group.setTitle("批量任务统一 Logo" if batch else "封面、Logo、字幕与配乐")
+        self.output_name_label.setText("文件名前缀" if batch else "文件名")
+        self.filename_edit.setText(self._batch_prefix if batch else self._manual_filename)
+        self.start_button.setText("开始批量剪辑" if batch else "开始剪辑")
+        if batch:
+            self.estimate_label.setText("输出名将按子文件夹顺序生成为：前缀1.mp4、前缀2.mp4……")
+        else:
+            self._update_estimate()
+        self._active_mode = mode
+
+    def _choose_batch_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择批量素材总目录", self.batch_root_edit.text())
+        if path:
+            self.batch_root_edit.setText(path)
+            self.preview_batch()
+
+    def preview_batch(self) -> None:
+        root_text = self.batch_root_edit.text().strip()
+        if not root_text:
+            self.batch_status.setText("请选择包含多个素材子文件夹的总目录。")
+            return
+        root = Path(root_text).expanduser()
+        output = Path(self.output_dir_edit.text()).expanduser() if self.output_dir_edit.text() else None
+        scan = scan_batch_root(root, excluded_dir=output)
+        message = f"可处理 {len(scan.sources)} 个子文件夹；不合格 {len(scan.issues)} 个。"
+        if scan.issues:
+            details = "\n".join(f"- {issue.source_dir.name}：{issue.message}" for issue in scan.issues[:5])
+            if len(scan.issues) > 5:
+                details += f"\n- 另有 {len(scan.issues) - 5} 个问题，请运行后查看完整日志。"
+            message += "\n" + details
+        self.batch_status.setText(message)
 
     def _choose_executable(self, edit: QLineEdit, title: str) -> None:
         path, _ = QFileDialog.getOpenFileName(self, title)
@@ -503,6 +617,13 @@ class MainWindow(QMainWindow):
         if not self._capabilities or not self._capabilities.ready:
             QMessageBox.critical(self, "无法开始", "FFmpeg 环境未通过检测。")
             return
+        if self.mode_combo.currentData() == "batch":
+            self._start_batch_render()
+        else:
+            self._start_manual_render()
+
+    def _start_manual_render(self) -> None:
+        assert self._capabilities is not None
         job = self._build_job()
         issues = validate_render_job(job)
         errors = [issue.message for issue in issues if issue.severity == IssueSeverity.ERROR]
@@ -516,7 +637,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.stage_label.setText("准备开始")
         self.log_view.clear()
+        self.download_log_button.setEnabled(False)
         self._last_result = None
+        self._last_output_dir = job.output_dir
         self._set_running(True)
         thread = QThread(self)
         worker = RenderWorker(job, self._capabilities)
@@ -535,10 +658,121 @@ class MainWindow(QMainWindow):
         self._worker = worker
         thread.start()
 
+    def _start_batch_render(self) -> None:
+        assert self._capabilities is not None
+        root_text = self.batch_root_edit.text().strip()
+        output_text = self.output_dir_edit.text().strip()
+        logo_text = self.logo_edit.text().strip()
+        if not root_text:
+            QMessageBox.warning(self, "任务配置有误", "请选择批量素材总目录。")
+            return
+        if not output_text:
+            QMessageBox.warning(self, "任务配置有误", "请选择输出目录。")
+            return
+        if not logo_text or not Path(logo_text).is_file():
+            QMessageBox.warning(self, "任务配置有误", "请选择本批任务统一使用的 Logo 图片。")
+            return
+
+        root = Path(root_text).expanduser()
+        output_dir = Path(output_text).expanduser()
+        prefix = self.filename_edit.text().strip()
+        if not prefix:
+            QMessageBox.warning(self, "任务配置有误", "请输入输出文件名前缀。")
+            return
+        scan = scan_batch_root(root, excluded_dir=output_dir)
+        self.preview_batch()
+        initial_failures = [BatchFailure(issue.source_dir.name, issue.message) for issue in scan.issues]
+        settings = self._render_settings()
+        batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        records_root = config_dir() / "batch_records" / batch_id
+        tasks: list[BatchRenderTask] = []
+        for index, source in enumerate(scan.sources, 1):
+            filename = batch_output_filename(prefix, index)
+            target = output_dir / filename
+            if target.exists():
+                initial_failures.append(
+                    BatchFailure(source.source_dir.name, f"输出文件已存在，为防止覆盖已跳过：{target}")
+                )
+                continue
+            job = RenderJob(
+                video_items=tuple(VideoItem(path, path.name) for path in source.video_paths),
+                cover_path=source.cover_path,
+                subtitle_path=source.subtitle_path,
+                music_path=source.music_path,
+                output_dir=output_dir,
+                output_filename=filename,
+                settings=settings,
+                logo_path=Path(logo_text),
+                auxiliary_dir=records_root / f"{index:04d}",
+            )
+            # Batch probing belongs to the worker thread so a large folder does not
+            # freeze the UI. Renderer performs the complete probe and validation.
+            errors = [
+                issue.message
+                for issue in validate_render_job(job)
+                if issue.severity == IssueSeverity.ERROR and issue.code != "video_unprobed"
+            ]
+            if errors:
+                initial_failures.append(BatchFailure(source.source_dir.name, "；".join(errors)))
+                continue
+            tasks.append(BatchRenderTask(source.source_dir, job))
+
+        if not tasks:
+            details = "\n".join(
+                f"{failure.source_name}：{failure.message}" for failure in initial_failures
+            ) or "没有找到可处理的素材子文件夹。"
+            self.log_view.clear()
+            self.download_log_button.setEnabled(False)
+            self._last_output_dir = output_dir
+            self._append_log("批量扫描后没有可执行任务：")
+            for failure in initial_failures:
+                self._append_log(f"跳过：{failure.source_name}：{failure.message}")
+            QMessageBox.warning(self, "没有可执行任务", details)
+            return
+
+        self.filename_edit.setText(prefix)
+        self._batch_prefix = prefix
+        self._save_current_settings(settings)
+        self.progress_bar.setValue(0)
+        self.stage_label.setText("准备批量处理")
+        self.log_view.clear()
+        self.download_log_button.setEnabled(False)
+        self._last_result = None
+        self._last_output_dir = output_dir
+        self._set_running(True)
+        self._append_log(
+            f"批量扫描完成：可执行 {len(tasks)} 个，预先跳过 {len(initial_failures)} 个。"
+        )
+        for failure in initial_failures:
+            self._append_log(f"跳过：{failure.source_name}：{failure.message}")
+
+        thread = QThread(self)
+        worker = BatchRenderWorker(
+            tuple(tasks),
+            tuple(initial_failures),
+            self._capabilities,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_progress)
+        worker.log.connect(self._append_log)
+        worker.completed.connect(self._on_batch_completed)
+        worker.failed.connect(self._on_failure)
+        worker.cancelled.connect(self._on_cancelled)
+        worker.done.connect(thread.quit)
+        worker.done.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._thread_finished)
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
     def _save_current_settings(self, settings: RenderSettings) -> None:
         self._settings = replace(
             self._settings,
             output_dir=str(Path(self.output_dir_edit.text()).expanduser()),
+            batch_input_dir=self.batch_root_edit.text().strip(),
+            output_prefix=self._batch_prefix,
             interpolation_mode=settings.interpolation_mode.value,
             source_audio_mode=settings.source_audio_mode.value,
             music_short_policy=settings.music_short_policy.value,
@@ -568,10 +802,28 @@ class MainWindow(QMainWindow):
 
     def _on_success(self, result: RenderResult) -> None:
         self._last_result = result
+        self._last_output_dir = result.output_path.parent
         self.stage_label.setText(f"完成：{result.output_path.name}")
         self.progress_bar.setValue(100)
         self.open_button.setEnabled(True)
         QMessageBox.information(self, "剪辑完成", f"成片已核验并保存：\n{result.output_path}")
+
+    def _on_batch_completed(self, summary: BatchRenderSummary) -> None:
+        if summary.successes:
+            self._last_result = summary.successes[-1]
+            self.open_button.setEnabled(True)
+        success_count = len(summary.successes)
+        failure_count = len(summary.failures)
+        self.stage_label.setText(f"批量完成：成功 {success_count}，失败/跳过 {failure_count}")
+        self.progress_bar.setValue(100)
+        self._append_log(f"===== 批量完成：成功 {success_count}，失败/跳过 {failure_count} =====")
+        for failure in summary.failures:
+            self._append_log(f"未生成：{failure.source_name}：{failure.message}")
+        message = f"批量任务已结束。\n成功：{success_count}\n失败/跳过：{failure_count}"
+        if failure_count:
+            QMessageBox.warning(self, "批量剪辑完成", message + "\n可点击“下载日志”保存详情。")
+        else:
+            QMessageBox.information(self, "批量剪辑完成", message)
 
     def _on_failure(self, message: str) -> None:
         self.stage_label.setText("失败")
@@ -595,15 +847,36 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(running)
         if running:
             self.open_button.setEnabled(False)
-        elif self._last_result:
+        elif self._last_result or self._last_output_dir:
             self.open_button.setEnabled(True)
 
     def open_output_folder(self) -> None:
-        if self._last_result and self._last_result.output_path.is_file():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_result.output_path.parent)))
+        output_dir = self._last_output_dir
+        if output_dir is None and self._last_result:
+            output_dir = self._last_result.output_path.parent
+        if output_dir and output_dir.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
+
+    def download_logs(self) -> None:
+        content = self.log_view.toPlainText()
+        if not content.strip():
+            QMessageBox.information(self, "没有日志", "当前还没有可下载的日志。")
+            return
+        base = self._last_output_dir if self._last_output_dir and self._last_output_dir.is_dir() else Path.home()
+        suggested = base / f"剪辑日志_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        path, _ = QFileDialog.getSaveFileName(self, "下载日志", str(suggested), "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(content.rstrip() + "\n", encoding="utf-8-sig", newline="\n")
+        except OSError as exc:
+            QMessageBox.critical(self, "日志保存失败", str(exc))
+            return
+        QMessageBox.information(self, "日志已保存", f"完整日志已保存到：\n{path}")
 
     def _append_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
+        self.download_log_button.setEnabled(True)
 
     @staticmethod
     def _select_combo(combo: QComboBox, value: str) -> None:

@@ -113,6 +113,7 @@ class RenderJob:
     output_filename: str
     settings: RenderSettings = field(default_factory=RenderSettings)
     logo_path: Path | None = None
+    auxiliary_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,24 @@ class RenderResult:
     timeline: TimelinePlan
     encoder: str
     verification: VerificationResult
+
+
+@dataclass(frozen=True)
+class BatchRenderTask:
+    source_dir: Path
+    job: RenderJob
+
+
+@dataclass(frozen=True)
+class BatchFailure:
+    source_name: str
+    message: str
+
+
+@dataclass(frozen=True)
+class BatchRenderSummary:
+    successes: tuple[RenderResult, ...]
+    failures: tuple[BatchFailure, ...]
 
 
 @dataclass(frozen=True)

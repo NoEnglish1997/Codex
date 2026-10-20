@@ -10,6 +10,8 @@ def test_settings_round_trip_is_atomic(tmp_path):
     store = SettingsStore(path)
     expected = AppSettings(
         output_dir=str(tmp_path),
+        batch_input_dir="C:/素材总目录",
+        output_prefix="成片测试_",
         interpolation_mode="fast",
         source_audio_mode="mix",
         music_short_policy="silence",
@@ -49,6 +51,7 @@ def test_invalid_values_are_sanitized(tmp_path):
             "subtitle_font_name": "bad\nfont",
             "logo_scale_percent": 999,
             "logo_opacity_percent": -20,
+            "output_prefix": "bad\nprefix",
         }),
         encoding="utf-8",
     )
@@ -59,4 +62,5 @@ def test_invalid_values_are_sanitized(tmp_path):
     assert settings.subtitle_font_name == "Microsoft YaHei"
     assert settings.logo_scale_percent == 300
     assert settings.logo_opacity_percent == 0
+    assert settings.output_prefix == "成片_"
     assert settings.output_dir != str(tmp_path / "missing")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-video-editor"
-version = "1.1.2"
+version = "2.0.0"
 description = "Windows 本地自动视频剪辑桌面软件"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

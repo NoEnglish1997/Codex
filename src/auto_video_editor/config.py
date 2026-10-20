@@ -14,6 +14,8 @@ from .utils.paths import config_dir, default_output_dir
 @dataclass(frozen=True)
 class AppSettings:
     output_dir: str = ""
+    batch_input_dir: str = ""
+    output_prefix: str = "成片_"
     interpolation_mode: str = InterpolationMode.MOTION.value
     source_audio_mode: str = SourceAudioMode.MUTE.value
     music_short_policy: str = MusicShortPolicy.LOOP.value
@@ -58,6 +60,9 @@ class AppSettings:
         font_name = str(raw.get("subtitle_font_name", defaults.subtitle_font_name)).strip()
         if not font_name or len(font_name) > 128 or "\n" in font_name or "\r" in font_name:
             font_name = defaults.subtitle_font_name
+        output_prefix = str(raw.get("output_prefix", defaults.output_prefix)).strip()
+        if not output_prefix or len(output_prefix) > 128 or "\n" in output_prefix or "\r" in output_prefix:
+            output_prefix = defaults.output_prefix
         try:
             logo_scale = min(300, max(10, int(raw.get("logo_scale_percent", defaults.logo_scale_percent))))
         except (TypeError, ValueError):
@@ -71,6 +76,8 @@ class AppSettings:
             logo_opacity = defaults.logo_opacity_percent
         return cls(
             output_dir=str(output),
+            batch_input_dir=str(raw.get("batch_input_dir", "") or ""),
+            output_prefix=output_prefix,
             interpolation_mode=interpolation,
             source_audio_mode=source_audio,
             music_short_policy=music_policy,

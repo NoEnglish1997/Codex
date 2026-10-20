@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import importlib.util
+import shutil
 import time
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from auto_video_editor.models import InterpolationMode
 from auto_video_editor.models import ProbeInfo, VideoItem
@@ -54,7 +55,7 @@ def _load_media_factory():
 
 
 @pytest.mark.integration
-def test_gui_can_import_reorder_and_render_without_freezing(tmp_path, monkeypatch):
+def test_gui_batch_render_continues_after_invalid_folder_and_downloads_log(tmp_path, monkeypatch):
     app = _app()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.StandardButton.Ok)
@@ -65,15 +66,25 @@ def test_gui_can_import_reorder_and_render_without_freezing(tmp_path, monkeypatc
         window.close()
         pytest.skip("FFmpeg is not available to the GUI")
     media = _load_media_factory()(tmp_path / "gui-media", str(window._capabilities.ffmpeg_path), duration=2.1)
-    window.add_video_paths([media["landscape"], media["portrait"]])
-    window.video_list.setCurrentItem(window.video_list.topLevelItem(1))
-    window.video_list.move_selected(-1)
-    assert window.video_list.video_items()[0].source_path == media["portrait"]
+    batch_root = tmp_path / "batch-root"
+    valid = batch_root / "素材10"
+    invalid = batch_root / "素材2"
+    valid.mkdir(parents=True)
+    invalid.mkdir(parents=True)
+    shutil.copy2(media["landscape"], valid / "视频1.mp4")
+    shutil.copy2(media["portrait"], valid / "视频2.mp4")
+    shutil.copy2(media["cover"], valid / "封面.png")
+    shutil.copy2(media["subtitle"], valid / "字幕.srt")
+    shutil.copy2(media["music_mp3"], valid / "配乐.mp3")
+    shutil.copy2(media["landscape"], invalid / "只有一段.mp4")
+
     window._select_combo(window.interpolation_combo, InterpolationMode.FAST.value)
-    window._set_optional_path(window.music_edit, str(media["long_music"]), "music")
-    assert "6.000" in window.music_info.text()
-    window.output_dir_edit.setText(str(tmp_path / "gui-output"))
-    window.filename_edit.setText("GUI 流程.mp4")
+    window._set_optional_path(window.logo_edit, str(media["logo"]), "logo")
+    output_dir = tmp_path / "gui-output"
+    output_dir.mkdir()
+    window.batch_root_edit.setText(str(batch_root))
+    window.output_dir_edit.setText(str(output_dir))
+    window.filename_edit.setText("批量成片_")
     window.start_button.click()
     deadline = time.monotonic() + 120
     while window._thread is not None and time.monotonic() < deadline:
@@ -87,5 +98,14 @@ def test_gui_can_import_reorder_and_render_without_freezing(tmp_path, monkeypatc
     assert window._last_result.verification.probe is not None
     assert window._last_result.verification.probe.has_audio
     assert window.progress_bar.value() == 100
+    assert [path.name for path in output_dir.iterdir()] == ["批量成片_1.mp4"]
+    assert "失败/跳过 1" in window.stage_label.text()
+    assert "素材2" in window.log_view.toPlainText()
+
+    log_path = tmp_path / "下载日志.txt"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(log_path), ""))
+    window.download_log_button.click()
+    assert log_path.read_text(encoding="utf-8-sig").endswith("\n")
+    assert "批量完成" in log_path.read_text(encoding="utf-8-sig")
     window.close()
     app.processEvents()

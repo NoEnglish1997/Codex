@@ -70,8 +70,10 @@ class Renderer:
     ) -> RenderResult:
         started = time.monotonic()
         job.output_dir.mkdir(parents=True, exist_ok=True)
+        auxiliary_dir = job.auxiliary_dir or job.output_dir
+        auxiliary_dir.mkdir(parents=True, exist_ok=True)
         log_path = unique_path(
-            job.output_dir / f"auto_video_editor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            auxiliary_dir / f"auto_video_editor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         )
         log_handle = log_path.open("w", encoding="utf-8", newline="\n")
 
@@ -90,7 +92,7 @@ class Renderer:
         part_path = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.part.mp4")
         temporary_dir: Path | None = None
         cover_output: Path | None = None
-        report_path = target.with_suffix(".job_report.json")
+        report_path = auxiliary_dir / f"{target.stem}.job_report.json"
         try:
             emit("预检", 0)
             if not self.capabilities.ready:
@@ -188,11 +190,11 @@ class Renderer:
             self._check_cancel(cancel_token)
             os.replace(part_path, target)
             if cover_jpg is not None:
-                cover_output = unique_path(prepared_job.output_dir / "cover.jpg")
+                cover_output = unique_path(auxiliary_dir / "cover.jpg")
                 cover_part = cover_output.with_name(f".{cover_output.name}.{uuid.uuid4().hex}.part")
                 shutil.copy2(cover_jpg, cover_part)
                 os.replace(cover_part, cover_output)
-            report_path = unique_path(target.with_suffix(".job_report.json"))
+            report_path = unique_path(auxiliary_dir / f"{target.stem}.job_report.json")
             self._write_report(
                 report_path,
                 prepared_job,
