@@ -14,6 +14,7 @@ from auto_video_editor.media.renderer import RenderCancelled, Renderer
 from auto_video_editor.models import (
     InterpolationMode,
     MusicShortPolicy,
+    OutputQuality,
     RenderJob,
     RenderSettings,
     SourceAudioMode,
@@ -99,6 +100,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
         source_audio_mode=SourceAudioMode.MIX,
         music_short_policy=MusicShortPolicy.LOOP,
         video_encoder=VideoEncoder.X264,
+        output_quality=OutputQuality.HIGH,
         logo_scale_percent=150,
         logo_opacity_percent=80,
     )
@@ -140,6 +142,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
     assert report["settings"]["mirrored_clip_indices"] == [2]
     assert report["settings"]["logo_scale_percent"] == 150
     assert report["settings"]["logo_opacity_percent"] == 80
+    assert report["settings"]["output_quality"] == "high"
 
     pure_second_body_frame = report["timeline"]["transition_offsets_frames"][0] + 65
     pure_second_output_frame = report["timeline"]["cover_frames"] + pure_second_body_frame

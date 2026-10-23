@@ -43,6 +43,7 @@ from ..models import (
     InterpolationMode,
     IssueSeverity,
     MusicShortPolicy,
+    OutputQuality,
     RenderJob,
     RenderResult,
     RenderSettings,
@@ -60,7 +61,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V2.0")
+        self.setWindowTitle("自动视频剪辑 V2.1")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -291,6 +292,14 @@ class MainWindow(QMainWindow):
         self.encoder_combo.addItem("CPU 兼容模式（libx264）", VideoEncoder.X264.value)
         self.encoder_combo.addItem("NVENC（失败回退 x264）", VideoEncoder.NVENC.value)
         self._select_combo(self.encoder_combo, self._settings.video_encoder)
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItem("标准：智能压缩（CRF/CQ 19）", OutputQuality.STANDARD.value)
+        self.quality_combo.addItem("高质量：更清晰、更大（CRF/CQ 16）", OutputQuality.HIGH.value)
+        self.quality_combo.addItem("超高质量：大文件（CRF/CQ 14）", OutputQuality.ULTRA.value)
+        self.quality_combo.addItem("目标 12 Mbps（20秒约30MB）", OutputQuality.BITRATE_12M.value)
+        self.quality_combo.addItem("目标 16 Mbps（20秒约40MB，接近剪映）", OutputQuality.BITRATE_16M.value)
+        self.quality_combo.addItem("目标 20 Mbps（20秒约50MB）", OutputQuality.BITRATE_20M.value)
+        self._select_combo(self.quality_combo, self._settings.output_quality)
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(round(self._settings.music_volume * 100))
@@ -332,20 +341,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.music_policy_combo, 2, 1)
         layout.addWidget(QLabel("编码器"), 2, 2)
         layout.addWidget(self.encoder_combo, 2, 3)
-        layout.addWidget(QLabel("配乐音量（片尾淡出1秒）"), 3, 0)
-        layout.addWidget(volume_widget, 3, 1)
-        layout.addWidget(self.mirror_second_clip, 3, 2, 1, 2)
-        layout.addWidget(self.subtitle_enabled, 4, 0)
-        layout.addWidget(QLabel("字幕字体"), 4, 1)
-        layout.addWidget(self.font_combo, 4, 2, 1, 2)
-        layout.addWidget(QLabel("字幕字号"), 5, 0)
-        layout.addWidget(self.font_size, 5, 1)
-        layout.addWidget(QLabel("描边宽度"), 5, 2)
-        layout.addWidget(self.outline_width, 5, 3)
-        layout.addWidget(QLabel("底部边距"), 6, 0)
-        layout.addWidget(self.subtitle_margin, 6, 1)
-        layout.addWidget(self.primary_color_button, 6, 2)
-        layout.addWidget(self.outline_color_button, 6, 3)
+        layout.addWidget(QLabel("导出质量"), 3, 0)
+        layout.addWidget(self.quality_combo, 3, 1, 1, 3)
+        layout.addWidget(QLabel("配乐音量（片尾淡出1秒）"), 4, 0)
+        layout.addWidget(volume_widget, 4, 1)
+        layout.addWidget(self.mirror_second_clip, 4, 2, 1, 2)
+        layout.addWidget(self.subtitle_enabled, 5, 0)
+        layout.addWidget(QLabel("字幕字体"), 5, 1)
+        layout.addWidget(self.font_combo, 5, 2, 1, 2)
+        layout.addWidget(QLabel("字幕字号"), 6, 0)
+        layout.addWidget(self.font_size, 6, 1)
+        layout.addWidget(QLabel("描边宽度"), 6, 2)
+        layout.addWidget(self.outline_width, 6, 3)
+        layout.addWidget(QLabel("底部边距"), 7, 0)
+        layout.addWidget(self.subtitle_margin, 7, 1)
+        layout.addWidget(self.primary_color_button, 7, 2)
+        layout.addWidget(self.outline_color_button, 7, 3)
         return group
 
     def _build_output_group(self) -> QGroupBox:
@@ -583,6 +594,7 @@ class MainWindow(QMainWindow):
             music_short_policy=MusicShortPolicy(self.music_policy_combo.currentData()),
             music_volume=self.volume_slider.value() / 100,
             video_encoder=VideoEncoder(self.encoder_combo.currentData()),
+            output_quality=OutputQuality(self.quality_combo.currentData()),
             mirror_second_clip=self.mirror_second_clip.isChecked(),
             logo_scale_percent=self.logo_scale.value(),
             logo_opacity_percent=self.logo_opacity.value(),
@@ -778,6 +790,7 @@ class MainWindow(QMainWindow):
             music_short_policy=settings.music_short_policy.value,
             music_volume=settings.music_volume,
             video_encoder=settings.video_encoder.value,
+            output_quality=settings.output_quality.value,
             mirror_second_clip=settings.mirror_second_clip,
             subtitle_font_name=settings.subtitle_style.font_name,
             logo_scale_percent=settings.logo_scale_percent,

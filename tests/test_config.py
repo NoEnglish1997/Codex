@@ -17,6 +17,7 @@ def test_settings_round_trip_is_atomic(tmp_path):
         music_short_policy="silence",
         music_volume=0.42,
         video_encoder="x264",
+        output_quality="bitrate_16m",
         mirror_second_clip=False,
         subtitle_font_name="SimHei",
         logo_scale_percent=175,
@@ -52,6 +53,7 @@ def test_invalid_values_are_sanitized(tmp_path):
             "logo_scale_percent": 999,
             "logo_opacity_percent": -20,
             "output_prefix": "bad\nprefix",
+            "output_quality": "huge",
         }),
         encoding="utf-8",
     )
@@ -63,4 +65,5 @@ def test_invalid_values_are_sanitized(tmp_path):
     assert settings.logo_scale_percent == 300
     assert settings.logo_opacity_percent == 0
     assert settings.output_prefix == "成片_"
+    assert settings.output_quality == "standard"
     assert settings.output_dir != str(tmp_path / "missing")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import importlib.util
+import json
 import shutil
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from auto_video_editor.models import InterpolationMode
+from auto_video_editor.models import InterpolationMode, OutputQuality
 from auto_video_editor.models import ProbeInfo, VideoItem
 from auto_video_editor.ui.main_window import MainWindow
 from auto_video_editor.ui.video_list_widget import VideoListWidget
@@ -79,6 +80,7 @@ def test_gui_batch_render_continues_after_invalid_folder_and_downloads_log(tmp_p
     shutil.copy2(media["landscape"], invalid / "只有一段.mp4")
 
     window._select_combo(window.interpolation_combo, InterpolationMode.FAST.value)
+    window._select_combo(window.quality_combo, OutputQuality.BITRATE_12M.value)
     window._set_optional_path(window.logo_edit, str(media["logo"]), "logo")
     output_dir = tmp_path / "gui-output"
     output_dir.mkdir()
@@ -97,6 +99,8 @@ def test_gui_batch_render_continues_after_invalid_folder_and_downloads_log(tmp_p
     assert window._last_result.verification.valid
     assert window._last_result.verification.probe is not None
     assert window._last_result.verification.probe.has_audio
+    report = json.loads(window._last_result.report_path.read_text(encoding="utf-8"))
+    assert report["settings"]["output_quality"] == "bitrate_12m"
     assert window.progress_bar.value() == 100
     assert [path.name for path in output_dir.iterdir()] == ["批量成片_1.mp4"]
     assert "失败/跳过 1" in window.stage_label.text()

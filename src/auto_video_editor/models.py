@@ -27,6 +27,15 @@ class VideoEncoder(str, Enum):
     X264 = "x264"
 
 
+class OutputQuality(str, Enum):
+    STANDARD = "standard"
+    HIGH = "high"
+    ULTRA = "ultra"
+    BITRATE_12M = "bitrate_12m"
+    BITRATE_16M = "bitrate_16m"
+    BITRATE_20M = "bitrate_20m"
+
+
 class IssueSeverity(str, Enum):
     ERROR = "error"
     WARNING = "warning"
@@ -92,6 +101,7 @@ class RenderSettings:
     music_volume: float = 0.35
     music_fadeout_seconds: float = 1.0
     video_encoder: VideoEncoder = VideoEncoder.AUTO
+    output_quality: OutputQuality = OutputQuality.STANDARD
     mirror_second_clip: bool = True
     subtitle_enabled: bool = True
     subtitle_style: SubtitleStyle = field(default_factory=SubtitleStyle)

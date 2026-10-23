@@ -15,6 +15,7 @@ from ..models import (
     ExpectedOutput,
     FFmpegCapabilities,
     IssueSeverity,
+    OutputQuality,
     RenderJob,
     RenderResult,
     SourceAudioMode,
@@ -24,6 +25,7 @@ from ..models import (
 )
 from ..utils.paths import sanitize_output_filename, unique_path
 from .audio import build_audio_plan, build_final_audio_filtergraph, build_source_acrossfade_filtergraph
+from .encoding import build_video_encoding_args
 from .ffprobe import ProbeError, probe_media
 from .progress import CancellationToken, run_ffmpeg
 from .subtitles import prepare_subtitles
@@ -521,12 +523,14 @@ class Renderer:
         if requested == "libx264" and job.settings.video_encoder != VideoEncoder.X264:
             log("NVENC 实际探测不可用，最终视频编码使用 libx264；补帧模式保持不变。")
         encoder = requested
+        log(f"输出质量：{job.settings.output_quality.value}")
         result = self._run_final_command(
             inputs,
             graph,
             video_label,
             audio_label,
             requested,
+            job.settings.output_quality,
             timeline,
             part_path,
             token,
@@ -547,6 +551,7 @@ class Renderer:
                     video_label,
                     audio_label,
                     encoder,
+                    job.settings.output_quality,
                     timeline,
                     part_path,
                     token,
@@ -565,6 +570,7 @@ class Renderer:
         video_label: str,
         audio_label: str | None,
         encoder: str,
+        output_quality: OutputQuality,
         timeline: TimelinePlan,
         part_path: Path,
         token: CancellationToken,
@@ -577,10 +583,7 @@ class Renderer:
         args.extend(["-map", video_label])
         if audio_label:
             args.extend(["-map", audio_label, "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
-        if encoder == "h264_nvenc":
-            args.extend(["-c:v", encoder, "-preset", "p5", "-rc", "vbr", "-cq", "19", "-b:v", "0"])
-        else:
-            args.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "19"])
+        args.extend(build_video_encoding_args(encoder, output_quality))
         args.extend(
             [
                 "-pix_fmt", "yuv420p", "-r", str(timeline.fps), "-fps_mode", "cfr",
@@ -680,6 +683,7 @@ class Renderer:
                 "interpolation_mode": job.settings.interpolation_mode.value,
                 "source_audio_mode": job.settings.source_audio_mode.value,
                 "music_volume": job.settings.music_volume,
+                "output_quality": job.settings.output_quality.value,
                 "mirror_second_clip": job.settings.mirror_second_clip,
                 "mirrored_clip_indices": [2]
                 if job.settings.mirror_second_clip and len(job.video_items) >= 2

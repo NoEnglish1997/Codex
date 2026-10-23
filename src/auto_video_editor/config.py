@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import InterpolationMode, MusicShortPolicy, SourceAudioMode, VideoEncoder
+from .models import InterpolationMode, MusicShortPolicy, OutputQuality, SourceAudioMode, VideoEncoder
 from .utils.paths import config_dir, default_output_dir
 
 
@@ -21,6 +21,7 @@ class AppSettings:
     music_short_policy: str = MusicShortPolicy.LOOP.value
     music_volume: float = 0.35
     video_encoder: str = VideoEncoder.AUTO.value
+    output_quality: str = OutputQuality.STANDARD.value
     mirror_second_clip: bool = True
     subtitle_font_name: str = "Microsoft YaHei"
     logo_scale_percent: int = 100
@@ -50,6 +51,9 @@ class AppSettings:
         encoder = str(raw.get("video_encoder", defaults.video_encoder))
         if encoder not in {item.value for item in VideoEncoder}:
             encoder = defaults.video_encoder
+        output_quality = str(raw.get("output_quality", defaults.output_quality))
+        if output_quality not in {item.value for item in OutputQuality}:
+            output_quality = defaults.output_quality
         try:
             volume = min(1.0, max(0.0, float(raw.get("music_volume", defaults.music_volume))))
         except (TypeError, ValueError):
@@ -83,6 +87,7 @@ class AppSettings:
             music_short_policy=music_policy,
             music_volume=volume,
             video_encoder=encoder,
+            output_quality=output_quality,
             mirror_second_clip=mirror_second,
             subtitle_font_name=font_name,
             logo_scale_percent=logo_scale,
