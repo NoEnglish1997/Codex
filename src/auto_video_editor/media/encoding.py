@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..models import OutputQuality
 
 
@@ -14,6 +16,14 @@ _TARGET_BITRATES_MBPS = {
     OutputQuality.BITRATE_16M: 16,
     OutputQuality.BITRATE_20M: 20,
 }
+
+
+def build_filtergraph_args(graph: str | Path) -> list[str]:
+    if isinstance(graph, Path):
+        # FFmpeg 8 removed -filter_complex_script; the option-from-file syntax
+        # works on supported FFmpeg 7+ builds and avoids Windows command limits.
+        return ["-/filter_complex", str(graph)]
+    return ["-filter_complex", graph]
 
 
 def build_video_encoding_args(encoder: str, quality: OutputQuality) -> list[str]:

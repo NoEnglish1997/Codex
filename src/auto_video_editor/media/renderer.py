@@ -31,7 +31,7 @@ from .audio import (
     build_single_pass_audio_filtergraph,
     build_source_acrossfade_filtergraph,
 )
-from .encoding import build_video_encoding_args
+from .encoding import build_filtergraph_args, build_video_encoding_args
 from .ffprobe import ProbeError, probe_media
 from .progress import CancellationToken, run_ffmpeg
 from .subtitles import prepare_subtitles
@@ -715,11 +715,7 @@ class Renderer:
         *,
         allow_failure: bool,
     ):
-        filter_args = (
-            ["-filter_complex_script", str(graph)]
-            if isinstance(graph, Path)
-            else ["-filter_complex", graph]
-        )
+        filter_args = build_filtergraph_args(graph)
         args = [str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", *inputs, *filter_args]
         args.extend(["-map", video_label])
         if audio_label:

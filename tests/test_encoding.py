@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from auto_video_editor.media.encoding import build_video_encoding_args
+from auto_video_editor.media.encoding import build_filtergraph_args, build_video_encoding_args
 from auto_video_editor.models import OutputQuality
 
 
@@ -47,3 +49,11 @@ def test_target_bitrate_profiles_apply_rate_controls(quality, bitrate, maxrate, 
 def test_unknown_encoder_is_rejected():
     with pytest.raises(ValueError, match="不支持"):
         build_video_encoding_args("unknown", OutputQuality.STANDARD)
+
+
+def test_filtergraph_file_uses_ffmpeg_7_plus_option_from_file_syntax():
+    path = Path("C:/临时目录/single_pass.ffgraph")
+    assert build_filtergraph_args(path) == ["-/filter_complex", str(path)]
+    assert build_filtergraph_args("[0:v]null[vout]") == [
+        "-filter_complex", "[0:v]null[vout]",
+    ]

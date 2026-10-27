@@ -1,4 +1,4 @@
-# 自动视频剪辑 V2.2
+# 自动视频剪辑 V2.2.1
 
 完全本地运行的 Windows 桌面自动剪辑软件，使用 Python 3.11/3.12、PySide6、FFmpeg 和 FFprobe。素材不会上传，也不依赖在线 API。
 
