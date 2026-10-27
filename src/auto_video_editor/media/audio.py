@@ -91,3 +91,93 @@ def build_final_audio_filtergraph(
             f"alimiter=limit=0.95,atrim=duration={duration:.9f},asetpts=N/SR/TB[aout]"
         )
     return ";".join(chains), "[aout]"
+
+
+def build_single_pass_audio_filtergraph(
+    plan: AudioPlan,
+    timeline: TimelinePlan,
+    *,
+    source_input_indices: tuple[int | None, ...],
+    music_input_index: int | None,
+) -> tuple[str, str] | None:
+    """Build source crossfades and music mixing directly from original inputs."""
+    chains: list[str] = []
+    labels: list[str] = []
+    if plan.include_source:
+        if len(source_input_indices) != len(timeline.frame_counts):
+            raise ValueError("原声音轨数量与视频时间线不一致")
+        for index, (input_index, frame_count) in enumerate(
+            zip(source_input_indices, timeline.frame_counts, strict=True)
+        ):
+            duration = frame_count / timeline.fps
+            if input_index is None:
+                chains.append(
+                    f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.9f},"
+                    f"asetpts=N/SR/TB[source_clip{index}]"
+                )
+            else:
+                chains.append(
+                    f"[{input_index}:a]aresample=48000,"
+                    "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                    f"asetpts=PTS-STARTPTS,apad,atrim=duration={duration:.9f},"
+                    f"asetpts=N/SR/TB[source_clip{index}]"
+                )
+        current = "source_clip0"
+        transition_seconds = 0.0
+        if len(timeline.frame_counts) > 1:
+            transition_frames = (
+                sum(timeline.frame_counts) - timeline.body_frames
+            ) / (len(timeline.frame_counts) - 1)
+            transition_seconds = transition_frames / timeline.fps
+        for index in range(1, len(source_input_indices)):
+            output = f"source_xf{index}"
+            chains.append(
+                f"[{current}][source_clip{index}]acrossfade=d={transition_seconds:.9f}:"
+                f"c1=tri:c2=tri[{output}]"
+            )
+            current = output
+        body_duration = timeline.body_frames / timeline.fps
+        delay = f"adelay=delays={plan.source_delay_samples}S:all=1," if plan.source_delay_samples else ""
+        chains.append(
+            f"[{current}]atrim=duration={body_duration:.9f},asetpts=N/SR/TB,"
+            f"{delay}apad,atrim=duration={plan.total_duration_seconds:.9f},"
+            "asetpts=N/SR/TB[source]"
+        )
+        labels.append("source")
+
+    if music_input_index is not None:
+        music_filters = [
+            "aresample=48000",
+            "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo",
+        ]
+        if not plan.loop_music:
+            music_filters.append("apad")
+        music_filters.extend(
+            [
+                f"volume={plan.music_volume:.6f}",
+                f"atrim=duration={plan.total_duration_seconds:.9f}",
+            ]
+        )
+        if plan.fadeout_start_seconds is not None and plan.fadeout_duration_seconds > 0:
+            music_filters.append(
+                f"afade=t=out:st={plan.fadeout_start_seconds:.9f}:d={plan.fadeout_duration_seconds:.9f}"
+            )
+        music_filters.append("asetpts=N/SR/TB")
+        chains.append(f"[{music_input_index}:a]{','.join(music_filters)}[music]")
+        labels.append("music")
+
+    if not labels:
+        return None
+    if len(labels) == 1:
+        chains.append(
+            f"[{labels[0]}]atrim=duration={plan.total_duration_seconds:.9f},"
+            "asetpts=N/SR/TB[aout]"
+        )
+    else:
+        inputs = "".join(f"[{label}]" for label in labels)
+        chains.append(
+            f"{inputs}amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,"
+            f"alimiter=limit=0.95,atrim=duration={plan.total_duration_seconds:.9f},"
+            "asetpts=N/SR/TB[aout]"
+        )
+    return ";".join(chains), "[aout]"

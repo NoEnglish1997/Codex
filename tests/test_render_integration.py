@@ -143,6 +143,12 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
     assert report["settings"]["logo_scale_percent"] == 150
     assert report["settings"]["logo_opacity_percent"] == 80
     assert report["settings"]["output_quality"] == "high"
+    assert report["pipeline"] == "single_pass"
+    assert report["video_encode_passes"] == 1
+    render_log = result.log_path.read_text(encoding="utf-8")
+    assert "单次视频编码模式" in render_log
+    assert render_log.count("'-c:v', 'libx264'") == 1
+    assert "clip_0001.mp4" not in render_log
 
     pure_second_body_frame = report["timeline"]["transition_offsets_frames"][0] + 65
     pure_second_output_frame = report["timeline"]["cover_frames"] + pure_second_body_frame

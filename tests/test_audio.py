@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from auto_video_editor.media.audio import build_audio_plan, build_final_audio_filtergraph
+from auto_video_editor.media.audio import (
+    build_audio_plan,
+    build_final_audio_filtergraph,
+    build_single_pass_audio_filtergraph,
+)
 from auto_video_editor.media.timeline import calculate_timeline
 from auto_video_editor.models import (
     MusicShortPolicy,
@@ -52,4 +56,34 @@ def test_short_music_policy_changes_looping(tmp_path):
     graph, label = build_final_audio_filtergraph(plan, source_input_index=None, music_input_index=1)
     assert "apad" in graph
     assert "volume=0.350000" in graph
+    assert label == "[aout]"
+
+
+def test_single_pass_audio_uses_original_tracks_silence_crossfade_and_music(tmp_path):
+    settings = RenderSettings(source_audio_mode=SourceAudioMode.MIX)
+    job = RenderJob(
+        (VideoItem(Path("first.mp4"), "first"), VideoItem(Path("silent.mp4"), "silent")),
+        Path("cover.png"),
+        None,
+        Path("music.mp3"),
+        tmp_path,
+        "out.mp4",
+        settings,
+    )
+    timeline = calculate_timeline([120, 120], True)
+    plan = build_audio_plan(job, timeline)
+
+    graph, label = build_single_pass_audio_filtergraph(
+        plan,
+        timeline,
+        source_input_indices=(0, None),
+        music_input_index=3,
+    )
+
+    assert "[0:a]aresample=48000" in graph
+    assert "anullsrc=r=48000:cl=stereo" in graph
+    assert "acrossfade=d=1.000000000" in graph
+    assert "adelay=delays=4000S:all=1" in graph
+    assert "[3:a]aresample=48000" in graph
+    assert "amix=inputs=2" in graph
     assert label == "[aout]"

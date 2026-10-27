@@ -61,7 +61,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V2.1")
+        self.setWindowTitle("自动视频剪辑 V2.2")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -582,7 +582,7 @@ class MainWindow(QMainWindow):
             plan = calculate_timeline(estimates, bool(self.cover_edit.text()))
             self.estimate_label.setText(
                 f"预计总时长：约 {plan.duration_seconds:.3f} 秒 / {plan.total_frames} 帧；"
-                "渲染后以逐片实际帧数重新计算"
+                "最终由单次编码时间线与 FFprobe 精确核验"
             )
         except ValueError as exc:
             self.estimate_label.setText(f"预计时间线无效：{exc}")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fractions import Fraction
 from pathlib import Path
 
-from ..models import InterpolationMode, ProbeInfo, RenderSettings
+from ..models import InterpolationMode, ProbeInfo, RenderSettings, TimelinePlan
 from .timeline import calculate_timeline
 
 
@@ -42,6 +42,7 @@ def build_canvas_filter(
     *,
     prefix: str = "",
     end_frames: int | None = None,
+    label_prefix: str = "",
 ) -> str:
     width, height = settings.width, settings.height
     finalize = _finalize_video(settings, end_frames)
@@ -50,14 +51,18 @@ def build_canvas_filter(
             f"{prefix}scale={width}:{height}:force_original_aspect_ratio=increase:"
             f"force_divisible_by=2,crop={width}:{height},{finalize}"
         )
+    bgsrc = f"{label_prefix}bgsrc"
+    fgsrc = f"{label_prefix}fgsrc"
+    background = f"{label_prefix}background"
+    foreground = f"{label_prefix}foreground"
     return (
-        f"{prefix}split=2[bgsrc][fgsrc];"
-        f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase:"
+        f"{prefix}split=2[{bgsrc}][{fgsrc}];"
+        f"[{bgsrc}]scale={width}:{height}:force_original_aspect_ratio=increase:"
         f"force_divisible_by=2,crop={width}:{height},gblur=sigma=30,"
-        "eq=brightness=-0.08[background];"
-        f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease:"
-        "force_divisible_by=2[foreground];"
-        "[background][foreground]overlay=(W-w)/2:(H-h)/2:shortest=1,"
+        f"eq=brightness=-0.08[{background}];"
+        f"[{fgsrc}]scale={width}:{height}:force_original_aspect_ratio=decrease:"
+        f"force_divisible_by=2[{foreground}];"
+        f"[{background}][{foreground}]overlay=(W-w)/2:(H-h)/2:shortest=1,"
         f"{finalize}"
     )
 
@@ -67,8 +72,9 @@ def build_normalization_filter(
     settings: RenderSettings,
     *,
     horizontal_flip: bool = False,
+    label_prefix: str = "",
 ) -> str:
-    target_frames = max(1, int(probe.duration_seconds * settings.fps + 0.5))
+    target_frames = normalized_frame_count(probe, settings)
     flip = "hflip," if horizontal_flip else ""
     prefix = (
         "setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=0.100000000,"
@@ -80,11 +86,132 @@ def build_normalization_filter(
         settings,
         prefix=prefix,
         end_frames=target_frames,
+        label_prefix=label_prefix,
     )
 
 
-def build_cover_filter(width: int, height: int, settings: RenderSettings) -> str:
-    return build_canvas_filter(width, height, settings, prefix="setpts=PTS-STARTPTS,")
+def normalized_frame_count(probe: ProbeInfo, settings: RenderSettings) -> int:
+    return max(1, int(probe.duration_seconds * settings.fps + 0.5))
+
+
+def build_cover_filter(
+    width: int,
+    height: int,
+    settings: RenderSettings,
+    *,
+    end_frames: int | None = None,
+    label_prefix: str = "",
+) -> str:
+    return build_canvas_filter(
+        width,
+        height,
+        settings,
+        prefix="setpts=PTS-STARTPTS,",
+        end_frames=end_frames,
+        label_prefix=label_prefix,
+    )
+
+
+def build_single_pass_video_filtergraph(
+    probes: tuple[ProbeInfo, ...],
+    settings: RenderSettings,
+    timeline: TimelinePlan,
+    subtitle_path: Path | None,
+    *,
+    cover_input: tuple[int, int, int] | None = None,
+    logo_input_index: int | None = None,
+) -> tuple[str, str]:
+    """Build one graph from original clips through overlays without intermediate video encoding."""
+    if not probes:
+        raise ValueError("至少需要一个视频探测结果")
+    if len(probes) != len(timeline.frame_counts):
+        raise ValueError("素材探测数量与时间线不一致")
+
+    chains: list[str] = []
+    for index, probe in enumerate(probes):
+        normalized = build_normalization_filter(
+            probe,
+            settings,
+            horizontal_flip=settings.mirror_second_clip and index == 1,
+            label_prefix=f"clip{index}_",
+        )
+        # xfade negotiates a common high-chroma working format. Put fps after
+        # that conversion so its inputs retain an explicit constant frame rate.
+        chains.append(
+            f"[{index}:v]{normalized},format=yuv444p,fps={settings.fps}[clip{index}]"
+        )
+
+    current = "clip0"
+    duration = settings.transition_frames / settings.fps
+    for index, offset_frames in enumerate(timeline.transition_offsets_frames, 1):
+        output = f"xf{index}"
+        offset = offset_frames / settings.fps
+        chains.append(
+            f"[{current}][clip{index}]xfade=transition=fade:duration={duration:.9f}:"
+            f"offset={offset:.9f}[{output}]"
+        )
+        current = output
+    chains.append(
+        f"[{current}]fps={settings.fps},tpad=stop_mode=clone:stop_duration=0.100000000,"
+        f"trim=end_frame={timeline.body_frames},setpts=PTS-STARTPTS,"
+        "setsar=1,format=yuv420p[body]"
+    )
+    current = "body"
+
+    if cover_input is not None:
+        input_index, width, height = cover_input
+        cover_filter = build_cover_filter(
+            width,
+            height,
+            settings,
+            end_frames=settings.cover_frames,
+            label_prefix="cover_",
+        )
+        chains.append(f"[{input_index}:v]{cover_filter}[cover]")
+        chains.append(
+            f"[cover][{current}]concat=n=2:v=1:a=0,"
+            f"trim=end_frame={timeline.total_frames},setpts=PTS-STARTPTS[with_cover]"
+        )
+        current = "with_cover"
+
+    chains.append(
+        f"[{current}]fps={settings.fps},tpad=stop_mode=clone:stop_duration=0.100000000,"
+        f"trim=end_frame={timeline.total_frames},setpts=PTS-STARTPTS[visual_base]"
+    )
+    current = "visual_base"
+
+    if logo_input_index is not None:
+        scale_percent = min(300, max(10, settings.logo_scale_percent))
+        opacity = min(100, max(0, settings.logo_opacity_percent)) / 100
+        logo_width = max(1, round(settings.logo_max_width * scale_percent / 100))
+        logo_height = max(1, round(settings.logo_max_height * scale_percent / 100))
+        start_index = max(0, settings.logo_start_frame - 1)
+        travel_frames = max(1, timeline.total_frames - start_index - 1)
+        progress = f"clip((n-{start_index})/{travel_frames},0,1)"
+        x = f"W-w-{settings.logo_margin}-(W-w-{settings.logo_margin * 2})*{progress}"
+        y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
+        chains.append(
+            f"[{logo_input_index}:v]scale=w={logo_width}:h={logo_height}:"
+            "force_original_aspect_ratio=decrease,format=rgba,"
+            f"colorchannelmixer=aa={opacity:.6f},setpts=PTS-STARTPTS[logo]"
+        )
+        chains.append(
+            f"[{current}][logo]overlay=x='{x}':y='{y}':enable='gte(n,{start_index})':"
+            "shortest=1[with_logo]"
+        )
+        current = "with_logo"
+
+    if subtitle_path is not None:
+        chains.append(
+            f"[{current}]subtitles=filename='{escape_filter_path(subtitle_path)}'[with_subtitles]"
+        )
+        current = "with_subtitles"
+
+    chains.append(
+        f"[{current}]fps={settings.fps},trim=end_frame={timeline.total_frames},"
+        "setsar=1,format=yuv420p,setpts=PTS-STARTPTS[vout]"
+    )
+    return ";".join(chains), "[vout]"
 
 
 def build_xfade_filtergraph(frame_counts: list[int] | tuple[int, ...], settings: RenderSettings) -> tuple[str, str]:

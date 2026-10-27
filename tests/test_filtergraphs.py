@@ -6,8 +6,11 @@ from pathlib import Path
 from auto_video_editor.media.video_filters import (
     build_final_video_filter,
     build_normalization_filter,
+    build_single_pass_video_filtergraph,
     build_xfade_filtergraph,
+    normalized_frame_count,
 )
+from auto_video_editor.media.timeline import calculate_timeline
 from auto_video_editor.models import InterpolationMode, ProbeInfo, RenderSettings
 
 
@@ -104,3 +107,36 @@ def test_logo_opacity_percentage_controls_alpha_and_is_clamped():
     )
     assert "colorchannelmixer=aa=0.350000" in translucent
     assert "colorchannelmixer=aa=0.000000" in invisible
+
+
+def test_single_pass_graph_combines_original_clips_cover_logo_and_transitions():
+    settings = RenderSettings(interpolation_mode=InterpolationMode.FAST)
+    probes = (_probe(), _probe(width=1080, height=1920))
+    timeline = calculate_timeline([180, 180], True)
+
+    graph, label = build_single_pass_video_filtergraph(
+        probes,
+        settings,
+        timeline,
+        None,
+        cover_input=(2, 320, 180),
+        logo_input_index=3,
+    )
+
+    assert "[0:v]" in graph and "[1:v]" in graph
+    assert "[clip0_bgsrc]" in graph and "[clip0]" in graph and "[clip1]" in graph
+    assert "[1:v]setpts=PTS-STARTPTS" in graph
+    assert "hflip" in graph
+    assert "[clip0][clip1]xfade=" in graph
+    assert "[2:v]" in graph and "[cover][body]concat=" in graph
+    assert "[3:v]scale=w=240:h=240" in graph
+    assert "trim=end_frame=305" in graph
+    assert label == "[vout]"
+
+
+def test_normalized_frame_count_matches_filter_trim_rule():
+    settings = RenderSettings(fps=60)
+    probe = _probe()
+    assert normalized_frame_count(probe, settings) == 180
+    graph = build_normalization_filter(probe, settings)
+    assert "trim=end_frame=180" in graph

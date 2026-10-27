@@ -16,6 +16,7 @@ from ..models import (
     FFmpegCapabilities,
     IssueSeverity,
     OutputQuality,
+    ProbeInfo,
     RenderJob,
     RenderResult,
     SourceAudioMode,
@@ -24,7 +25,12 @@ from ..models import (
     VideoItem,
 )
 from ..utils.paths import sanitize_output_filename, unique_path
-from .audio import build_audio_plan, build_final_audio_filtergraph, build_source_acrossfade_filtergraph
+from .audio import (
+    build_audio_plan,
+    build_final_audio_filtergraph,
+    build_single_pass_audio_filtergraph,
+    build_source_acrossfade_filtergraph,
+)
 from .encoding import build_video_encoding_args
 from .ffprobe import ProbeError, probe_media
 from .progress import CancellationToken, run_ffmpeg
@@ -37,7 +43,9 @@ from .video_filters import (
     build_cover_filter,
     build_final_video_filter,
     build_normalization_filter,
+    build_single_pass_video_filtergraph,
     build_xfade_filtergraph,
+    normalized_frame_count,
 )
 
 
@@ -114,41 +122,11 @@ class Renderer:
             log(f"任务临时目录：{temporary_dir}")
             emit("预检完成", 5)
 
-            normalized, frame_counts, source_audio_files = self._normalize_clips(
-                prepared_job, temporary_dir, cancel_token, emit, log
-            )
-            timeline_without_cover = calculate_timeline(
-                frame_counts,
-                False,
-                fps=prepared_job.settings.fps,
-                transition_frames=prepared_job.settings.transition_frames,
-                cover_frames=prepared_job.settings.cover_frames,
-            )
-            body_video = self._combine_video(
-                normalized,
-                timeline_without_cover,
-                prepared_job,
-                temporary_dir,
-                cancel_token,
-                emit,
-                log,
-            )
-            body_audio = self._combine_source_audio(
-                source_audio_files,
-                timeline_without_cover,
-                prepared_job,
-                temporary_dir,
-                cancel_token,
-                log,
-            )
-            visual_video, cover_jpg = self._add_cover(
-                body_video,
-                timeline_without_cover,
-                prepared_job,
-                temporary_dir,
-                cancel_token,
-                emit,
-                log,
+            probes = tuple(item.probe for item in prepared_job.video_items)
+            assert all(probe is not None for probe in probes)
+            typed_probes = tuple(probe for probe in probes if probe is not None)
+            frame_counts = tuple(
+                normalized_frame_count(probe, prepared_job.settings) for probe in typed_probes
             )
             timeline = calculate_timeline(
                 frame_counts,
@@ -157,6 +135,10 @@ class Renderer:
                 transition_frames=prepared_job.settings.transition_frames,
                 cover_frames=prepared_job.settings.cover_frames,
             )
+            log(
+                "单次视频编码模式：标准化、镜像、转场、封面、Logo 与字幕在同一滤镜图完成。"
+            )
+            log(f"计划素材帧数：{list(frame_counts)}；成片总帧数：{timeline.total_frames}。")
             subtitle_path = None
             if prepared_job.subtitle_path and prepared_job.settings.subtitle_enabled:
                 subtitle_path = prepare_subtitles(
@@ -166,12 +148,25 @@ class Renderer:
                     style=prepared_job.settings.subtitle_style,
                 )
                 log(f"字幕已准备，时间偏移 {timeline.subtitle_offset_seconds:.9f} 秒。")
-            encoder = self._encode_final(
-                visual_video,
-                body_audio,
+            cover_probe = (
+                probe_media(prepared_job.cover_path, self.capabilities.ffprobe_path)
+                if prepared_job.cover_path is not None
+                else None
+            )
+            cover_jpg = self._export_cover_image(
+                prepared_job,
+                cover_probe,
+                temporary_dir,
+                cancel_token,
+                log,
+            )
+            encoder = self._encode_single_pass(
+                typed_probes,
                 subtitle_path,
                 timeline,
                 prepared_job,
+                cover_probe,
+                temporary_dir,
                 part_path,
                 cancel_token,
                 emit,
@@ -183,7 +178,10 @@ class Renderer:
                 height=prepared_job.settings.height,
                 fps=prepared_job.settings.fps,
                 frame_count=timeline.total_frames,
-                has_audio=body_audio is not None or prepared_job.music_path is not None,
+                has_audio=(
+                    prepared_job.settings.source_audio_mode == SourceAudioMode.MIX
+                    or prepared_job.music_path is not None
+                ),
                 duration_seconds=timeline.duration_seconds,
             )
             verification = verify_output(part_path, self.capabilities.ffprobe_path, expected)
@@ -252,7 +250,7 @@ class Renderer:
 
     def _check_disk_space(self, job: RenderJob, log: LogCallback) -> None:
         source_bytes = sum(item.source_path.stat().st_size for item in job.video_items if item.source_path.exists())
-        required = max(512 * 1024 * 1024, source_bytes * 4)
+        required = max(256 * 1024 * 1024, source_bytes * 2)
         free = shutil.disk_usage(self.cache_root.parent if not self.cache_root.exists() else self.cache_root).free
         log(f"临时空间估计至少 {required / 1024**3:.2f} GiB；当前可用 {free / 1024**3:.2f} GiB。")
         if free < required:
@@ -467,6 +465,144 @@ class Renderer:
             raise RenderError(f"封面合并帧数错误：期望 {expected}，实际 {combined_count}")
         return output, cover_jpg
 
+    def _export_cover_image(
+        self,
+        job: RenderJob,
+        cover_probe: ProbeInfo | None,
+        temporary_dir: Path,
+        token: CancellationToken,
+        log: LogCallback,
+    ) -> Path | None:
+        if job.cover_path is None or cover_probe is None:
+            return None
+        cover_jpg = temporary_dir / "cover.jpg"
+        still_filter = build_cover_filter(cover_probe.width, cover_probe.height, job.settings)
+        args = [
+            str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", "-i", str(job.cover_path),
+            "-vf", still_filter, "-frames:v", "1", "-q:v", "2", "-update", "1",
+            "-loglevel", "error", str(cover_jpg),
+        ]
+        self._run(args, token, None, None, log)
+        return cover_jpg
+
+    def _encode_single_pass(
+        self,
+        probes: tuple[ProbeInfo, ...],
+        subtitle_path: Path | None,
+        timeline: TimelinePlan,
+        job: RenderJob,
+        cover_probe: ProbeInfo | None,
+        temporary_dir: Path,
+        part_path: Path,
+        token: CancellationToken,
+        emit: Callable[[str, float], None],
+        log: LogCallback,
+    ) -> str:
+        audio_plan = build_audio_plan(job, timeline)
+        inputs: list[str] = []
+        source_audio_indices: list[int | None] = []
+        for index, (item, probe) in enumerate(zip(job.video_items, probes, strict=True)):
+            inputs.extend(["-i", str(item.source_path)])
+            source_audio_indices.append(index if probe.has_audio else None)
+
+        next_index = len(job.video_items)
+        cover_input: tuple[int, int, int] | None = None
+        if job.cover_path is not None and cover_probe is not None:
+            cover_input = (next_index, cover_probe.width, cover_probe.height)
+            inputs.extend(
+                [
+                    "-loop", "1", "-framerate", str(job.settings.fps),
+                    "-t", f"{job.settings.cover_frames / job.settings.fps:.9f}",
+                    "-i", str(job.cover_path),
+                ]
+            )
+            next_index += 1
+
+        logo_index: int | None = None
+        if job.logo_path is not None:
+            logo_index = next_index
+            inputs.extend(
+                [
+                    "-loop", "1", "-framerate", str(job.settings.fps),
+                    "-t", f"{timeline.duration_seconds:.9f}",
+                    "-i", str(job.logo_path),
+                ]
+            )
+            next_index += 1
+
+        music_index: int | None = None
+        if job.music_path is not None:
+            music_index = next_index
+            if audio_plan.loop_music:
+                inputs.extend(["-stream_loop", "-1"])
+            inputs.extend(["-i", str(job.music_path)])
+
+        video_graph, video_label = build_single_pass_video_filtergraph(
+            probes,
+            job.settings,
+            timeline,
+            subtitle_path,
+            cover_input=cover_input,
+            logo_input_index=logo_index,
+        )
+        audio_graph = build_single_pass_audio_filtergraph(
+            audio_plan,
+            timeline,
+            source_input_indices=tuple(source_audio_indices),
+            music_input_index=music_index,
+        )
+        graph = video_graph
+        audio_label: str | None = None
+        if audio_graph:
+            graph = f"{graph};{audio_graph[0]}"
+            audio_label = audio_graph[1]
+        filter_script = temporary_dir / "single_pass.ffgraph"
+        filter_script.write_text(graph + "\n", encoding="utf-8", newline="\n")
+
+        requested = self._select_encoder(job)
+        if requested == "libx264" and job.settings.video_encoder != VideoEncoder.X264:
+            log("NVENC 实际探测不可用，最终视频编码使用 libx264；补帧模式保持不变。")
+        encoder = requested
+        log(f"输出质量：{job.settings.output_quality.value}；视频编码次数：1。")
+        result = self._run_final_command(
+            inputs,
+            filter_script,
+            video_label,
+            audio_label,
+            requested,
+            job.settings.output_quality,
+            timeline,
+            part_path,
+            token,
+            emit,
+            log,
+            allow_failure=requested == "h264_nvenc",
+        )
+        if not result.succeeded:
+            if result.cancelled:
+                raise RenderCancelled("任务已取消")
+            if requested == "h264_nvenc" and self._is_nvenc_initialization_failure(result.stderr):
+                log("NVENC 编码器初始化失败，从原素材直接回退到 libx264 单次编码。")
+                part_path.unlink(missing_ok=True)
+                encoder = "libx264"
+                self._run_final_command(
+                    inputs,
+                    filter_script,
+                    video_label,
+                    audio_label,
+                    encoder,
+                    job.settings.output_quality,
+                    timeline,
+                    part_path,
+                    token,
+                    emit,
+                    log,
+                    allow_failure=False,
+                )
+            else:
+                raise RenderError(self._ffmpeg_error("最终编码失败", result.stderr))
+        return encoder
+
     def _encode_final(
         self,
         visual_video: Path,
@@ -566,7 +702,7 @@ class Renderer:
     def _run_final_command(
         self,
         inputs: list[str],
-        graph: str,
+        graph: str | Path,
         video_label: str,
         audio_label: str | None,
         encoder: str,
@@ -579,13 +715,19 @@ class Renderer:
         *,
         allow_failure: bool,
     ):
-        args = [str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", *inputs, "-filter_complex", graph]
+        filter_args = (
+            ["-filter_complex_script", str(graph)]
+            if isinstance(graph, Path)
+            else ["-filter_complex", graph]
+        )
+        args = [str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", *inputs, *filter_args]
         args.extend(["-map", video_label])
         if audio_label:
             args.extend(["-map", audio_label, "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
         args.extend(build_video_encoding_args(encoder, output_quality))
         args.extend(
             [
+                "-frames:v", str(timeline.total_frames),
                 "-pix_fmt", "yuv420p", "-r", str(timeline.fps), "-fps_mode", "cfr",
                 "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-loglevel", "error",
                 str(part_path),
@@ -594,7 +736,7 @@ class Renderer:
         result = run_ffmpeg(
             args,
             token,
-            lambda fraction: emit("字幕、配乐与成片编码", 85 + 14 * fraction),
+            lambda fraction: emit("单次编码：标准化、转场与成片", 5 + 93 * fraction),
             expected_duration_seconds=timeline.duration_seconds,
             log_callback=log,
         )
@@ -674,6 +816,8 @@ class Renderer:
             "logo": job.logo_path.name if job.logo_path else None,
             "source_order": [item.display_name for item in job.video_items],
             "encoder": encoder,
+            "pipeline": "single_pass",
+            "video_encode_passes": 1,
             "settings": {
                 "width": job.settings.width,
                 "height": job.settings.height,
