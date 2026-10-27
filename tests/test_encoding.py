@@ -29,21 +29,30 @@ def test_nvenc_high_quality_uses_cq_without_target_bitrate():
 
 
 @pytest.mark.parametrize(
-    ("quality", "bitrate", "maxrate", "bufsize"),
+    ("quality", "bitrate", "bufsize"),
     [
-        (OutputQuality.BITRATE_12M, "12M", "15M", "24M"),
-        (OutputQuality.BITRATE_16M, "16M", "20M", "32M"),
-        (OutputQuality.BITRATE_20M, "20M", "25M", "40M"),
+        (OutputQuality.BITRATE_12M, "12M", "24M"),
+        (OutputQuality.BITRATE_16M, "16M", "32M"),
+        (OutputQuality.BITRATE_20M, "20M", "40M"),
     ],
 )
-def test_target_bitrate_profiles_apply_rate_controls(quality, bitrate, maxrate, bufsize):
+def test_target_bitrate_profiles_apply_stable_rate_controls(quality, bitrate, bufsize):
     for encoder in ("libx264", "h264_nvenc"):
         args = build_video_encoding_args(encoder, quality)
         assert args[args.index("-b:v") + 1] == bitrate
-        assert args[args.index("-maxrate") + 1] == maxrate
+        assert args[args.index("-minrate") + 1] == bitrate
+        assert args[args.index("-maxrate") + 1] == bitrate
         assert args[args.index("-bufsize") + 1] == bufsize
         assert "-crf" not in args
         assert "-cq" not in args
+
+
+def test_stable_bitrate_profiles_use_encoder_specific_cbr_controls():
+    x264 = build_video_encoding_args("libx264", OutputQuality.BITRATE_16M)
+    nvenc = build_video_encoding_args("h264_nvenc", OutputQuality.BITRATE_16M)
+    assert x264[x264.index("-x264-params") + 1] == "nal-hrd=cbr:force-cfr=1"
+    assert nvenc[nvenc.index("-rc") + 1] == "cbr"
+    assert "-multipass" not in nvenc
 
 
 def test_unknown_encoder_is_rejected():

@@ -48,7 +48,8 @@ def build_canvas_filter(
     finalize = _finalize_video(settings, end_frames)
     if _is_near_target_aspect(source_width, source_height, width, height):
         return (
-            f"{prefix}scale={width}:{height}:force_original_aspect_ratio=increase:"
+            f"{prefix}scale=w={width}:h={height}:flags=lanczos:"
+            "force_original_aspect_ratio=increase:"
             f"force_divisible_by=2,crop={width}:{height},{finalize}"
         )
     bgsrc = f"{label_prefix}bgsrc"
@@ -57,10 +58,12 @@ def build_canvas_filter(
     foreground = f"{label_prefix}foreground"
     return (
         f"{prefix}split=2[{bgsrc}][{fgsrc}];"
-        f"[{bgsrc}]scale={width}:{height}:force_original_aspect_ratio=increase:"
+        f"[{bgsrc}]scale=w={width}:h={height}:flags=lanczos:"
+        "force_original_aspect_ratio=increase:"
         f"force_divisible_by=2,crop={width}:{height},gblur=sigma=30,"
         f"eq=brightness=-0.08[{background}];"
-        f"[{fgsrc}]scale={width}:{height}:force_original_aspect_ratio=decrease:"
+        f"[{fgsrc}]scale=w={width}:h={height}:flags=lanczos:"
+        "force_original_aspect_ratio=decrease:"
         f"force_divisible_by=2[{foreground}];"
         f"[{background}][{foreground}]overlay=(W-w)/2:(H-h)/2:shortest=1,"
         f"{finalize}"
@@ -178,7 +181,12 @@ def build_single_pass_video_filtergraph(
         f"[{current}]fps={settings.fps},tpad=stop_mode=clone:stop_duration=0.100000000,"
         f"trim=end_frame={timeline.total_frames},setpts=PTS-STARTPTS[visual_base]"
     )
-    current = "visual_base"
+    # A restrained luma-only sharpen recovers edge contrast lost during scaling
+    # without using an AI model or adding chroma ringing to text and logos.
+    chains.append(
+        "[visual_base]unsharp=5:5:0.45:5:5:0.0[enhanced_base]"
+    )
+    current = "enhanced_base"
 
     if logo_input_index is not None:
         scale_percent = min(300, max(10, settings.logo_scale_percent))
@@ -192,7 +200,7 @@ def build_single_pass_video_filtergraph(
         y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
         chains.append(
             f"[{logo_input_index}:v]scale=w={logo_width}:h={logo_height}:"
-            "force_original_aspect_ratio=decrease,format=rgba,"
+            "flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,"
             f"colorchannelmixer=aa={opacity:.6f},setpts=PTS-STARTPTS[logo]"
         )
         chains.append(
@@ -283,7 +291,7 @@ def build_final_video_filter(
         y = f"{settings.logo_margin}+(H-h-{settings.logo_margin * 2})*{progress}"
         chains.append(
             f"[{logo_input_index}:v]scale=w={logo_width}:h={logo_height}:"
-            "force_original_aspect_ratio=decrease,format=rgba,"
+            "flags=lanczos:force_original_aspect_ratio=decrease,format=rgba,"
             f"colorchannelmixer=aa={opacity:.6f},setpts=PTS-STARTPTS[logo]"
         )
         chains.append(

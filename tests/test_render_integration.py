@@ -100,7 +100,7 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
         source_audio_mode=SourceAudioMode.MIX,
         music_short_policy=MusicShortPolicy.LOOP,
         video_encoder=VideoEncoder.X264,
-        output_quality=OutputQuality.HIGH,
+        output_quality=OutputQuality.BITRATE_12M,
         logo_scale_percent=150,
         logo_opacity_percent=80,
     )
@@ -142,13 +142,16 @@ def test_real_three_clip_render_with_cover_subtitles_music_and_audio(tmp_path, f
     assert report["settings"]["mirrored_clip_indices"] == [2]
     assert report["settings"]["logo_scale_percent"] == 150
     assert report["settings"]["logo_opacity_percent"] == 80
-    assert report["settings"]["output_quality"] == "high"
+    assert report["settings"]["output_quality"] == "bitrate_12m"
     assert report["pipeline"] == "single_pass"
     assert report["video_encode_passes"] == 1
     render_log = result.log_path.read_text(encoding="utf-8")
     assert "单次视频编码模式" in render_log
     assert render_log.count("'-c:v', 'libx264'") == 1
+    assert "'-minrate', '12M', '-maxrate', '12M'" in render_log
     assert "clip_0001.mp4" not in render_log
+    expected_video_bytes = result.timeline.duration_seconds * 12_000_000 / 8
+    assert result.output_path.stat().st_size >= expected_video_bytes * 0.8
 
     pure_second_body_frame = report["timeline"]["transition_offsets_frames"][0] + 65
     pure_second_output_frame = report["timeline"]["cover_frames"] + pure_second_body_frame

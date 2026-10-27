@@ -61,7 +61,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V2.2.1")
+        self.setWindowTitle("自动视频剪辑 V2.3")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -296,9 +296,9 @@ class MainWindow(QMainWindow):
         self.quality_combo.addItem("标准：智能压缩（CRF/CQ 19）", OutputQuality.STANDARD.value)
         self.quality_combo.addItem("高质量：更清晰、更大（CRF/CQ 16）", OutputQuality.HIGH.value)
         self.quality_combo.addItem("超高质量：大文件（CRF/CQ 14）", OutputQuality.ULTRA.value)
-        self.quality_combo.addItem("目标 12 Mbps（20秒约30MB）", OutputQuality.BITRATE_12M.value)
-        self.quality_combo.addItem("目标 16 Mbps（20秒约40MB，接近剪映）", OutputQuality.BITRATE_16M.value)
-        self.quality_combo.addItem("目标 20 Mbps（20秒约50MB）", OutputQuality.BITRATE_20M.value)
+        self.quality_combo.addItem("稳定 12 Mbps（20秒约30MB）", OutputQuality.BITRATE_12M.value)
+        self.quality_combo.addItem("稳定 16 Mbps（20秒约40MB，接近剪映）", OutputQuality.BITRATE_16M.value)
+        self.quality_combo.addItem("稳定 20 Mbps（20秒约50MB）", OutputQuality.BITRATE_20M.value)
         self._select_combo(self.quality_combo, self._settings.output_quality)
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)

@@ -38,12 +38,15 @@ def build_video_encoding_args(encoder: str, quality: OutputQuality) -> list[str]
         return ["-c:v", encoder, "-preset", "veryfast", "-crf", value]
 
     bitrate = _TARGET_BITRATES_MBPS[quality]
-    maxrate = round(bitrate * 1.25)
     shared = [
         "-b:v", f"{bitrate}M",
-        "-maxrate", f"{maxrate}M",
+        "-minrate", f"{bitrate}M",
+        "-maxrate", f"{bitrate}M",
         "-bufsize", f"{bitrate * 2}M",
     ]
     if encoder == "h264_nvenc":
-        return ["-c:v", encoder, "-preset", "p5", "-rc", "vbr", *shared]
-    return ["-c:v", encoder, "-preset", "veryfast", *shared]
+        return ["-c:v", encoder, "-preset", "p5", "-rc", "cbr", *shared]
+    return [
+        "-c:v", encoder, "-preset", "veryfast", *shared,
+        "-x264-params", "nal-hrd=cbr:force-cfr=1",
+    ]

@@ -45,6 +45,7 @@ def test_native_60fps_does_not_run_motion_interpolation_twice():
 def test_landscape_gets_blurred_background_and_full_foreground():
     graph = build_normalization_filter(_probe(), RenderSettings())
     assert "split=2" in graph
+    assert graph.count("flags=lanczos") == 2
     assert "gblur=sigma=30" in graph
     assert "force_original_aspect_ratio=decrease" in graph
     assert "overlay=(W-w)/2:(H-h)/2" in graph
@@ -54,6 +55,7 @@ def test_native_vertical_uses_fast_aspect_path():
     graph = build_normalization_filter(_probe(720, 1280), RenderSettings())
     assert "gblur" not in graph
     assert "crop=1440:2560" in graph
+    assert "scale=w=1440:h=2560:flags=lanczos" in graph
 
 
 def test_second_clip_can_be_mirrored_before_canvas_composition():
@@ -130,6 +132,8 @@ def test_single_pass_graph_combines_original_clips_cover_logo_and_transitions():
     assert "[clip0][clip1]xfade=" in graph
     assert "[2:v]" in graph and "[cover][body]concat=" in graph
     assert "[3:v]scale=w=240:h=240" in graph
+    assert "[visual_base]unsharp=5:5:0.45:5:5:0.0[enhanced_base]" in graph
+    assert "[enhanced_base][logo]overlay=" in graph
     assert "trim=end_frame=305" in graph
     assert label == "[vout]"
 
