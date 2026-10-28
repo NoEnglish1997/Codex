@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from auto_video_editor.models import CanvasMode, InterpolationMode, OutputQuality, TransitionType
 from auto_video_editor.models import ProbeInfo, VideoItem
 from auto_video_editor.ui.main_window import MainWindow
+from auto_video_editor.ui.theme import APP_STYLESHEET, apply_theme
 from auto_video_editor.ui.video_list_widget import VideoListWidget
 
 
@@ -48,9 +49,14 @@ def test_video_list_preserves_manual_order_and_duplicates():
 
 def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypatch):
     app = _app()
+    apply_theme(app)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
     window = MainWindow()
+    assert app.styleSheet() == APP_STYLESHEET
+    assert window.start_button.objectName() == "primaryButton"
+    assert window.config_widget.objectName() == "configSurface"
+    assert window.log_view.height() == 92
     window._select_combo(window.transition_type_combo, TransitionType.WIPE_LEFT.value)
     window.transition_seconds.setValue(0.5)
     window._select_combo(window.canvas_mode_combo, CanvasMode.CROP.value)
@@ -69,6 +75,11 @@ def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypat
     assert settings.duck_music_under_source is True
     assert settings.cover_title == "结构安全"
     assert settings.subtitle_style.highlight_words == ("安全", "结构")
+    window.show()
+    app.processEvents()
+    window.toggle_log_button.click()
+    assert window.log_view.isHidden()
+    assert window.toggle_log_button.text() == "显示日志"
     window.close()
     app.processEvents()
 

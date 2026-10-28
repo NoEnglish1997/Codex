@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFontComboBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -85,7 +87,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V3.0")
+        self.setWindowTitle("自动视频剪辑 V3.1")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -124,16 +126,20 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         scroll = QScrollArea(self)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidgetResizable(True)
         self.config_widget = QWidget(scroll)
+        self.config_widget.setObjectName("configSurface")
         main = QVBoxLayout(self.config_widget)
-        main.setSpacing(10)
-        header = QLabel("自动视频剪辑")
-        header.setStyleSheet("font-size: 22px; font-weight: 600;")
-        main.addWidget(header)
+        main.setContentsMargins(18, 16, 18, 20)
+        main.setSpacing(12)
+        main.addWidget(self._build_hero())
         main.addWidget(self._build_tools_group())
-        main.addWidget(self._build_mode_group())
-        main.addWidget(self._build_preset_group())
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(12)
+        quick_row.addWidget(self._build_mode_group(), 1)
+        quick_row.addWidget(self._build_preset_group(), 2)
+        main.addLayout(quick_row)
         self.batch_group = self._build_batch_group()
         main.addWidget(self.batch_group)
         self.video_group = self._build_video_group()
@@ -150,11 +156,41 @@ class MainWindow(QMainWindow):
 
         outer = QWidget(self)
         outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(8, 8, 8, 8)
+        outer_layout.setContentsMargins(10, 10, 10, 10)
+        outer_layout.setSpacing(10)
         outer_layout.addWidget(scroll, 1)
         outer_layout.addWidget(self._build_run_group())
+        outer_layout.setStretch(0, 1)
+        outer_layout.setStretch(1, 0)
         self.setCentralWidget(outer)
         self._on_mode_changed()
+
+    def _build_hero(self) -> QFrame:
+        hero = QFrame()
+        hero.setObjectName("heroCard")
+        layout = QHBoxLayout(hero)
+        layout.setContentsMargins(24, 18, 22, 18)
+        layout.setSpacing(18)
+
+        text = QVBoxLayout()
+        text.setSpacing(3)
+        title = QLabel("自动视频剪辑")
+        title.setObjectName("heroTitle")
+        subtitle = QLabel("本地 FFmpeg 专业工作流 · 批量处理 · 单次最终编码")
+        subtitle.setObjectName("heroSubtitle")
+        text.addWidget(title)
+        text.addWidget(subtitle)
+        layout.addLayout(text, 1)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(7)
+        for value in ("V3.1", "2K 竖屏", "完全本地", "非 AI"):
+            chip = QLabel(value)
+            chip.setObjectName("heroChip")
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chips.addWidget(chip)
+        layout.addLayout(chips)
+        return hero
 
     def _build_mode_group(self) -> QGroupBox:
         group = QGroupBox("工作模式")
@@ -194,6 +230,7 @@ class MainWindow(QMainWindow):
         scan = QPushButton("扫描检查")
         scan.clicked.connect(self.preview_batch)
         self.batch_status = QLabel("请选择包含多个素材子文件夹的总目录。")
+        self.batch_status.setObjectName("infoPanel")
         self.batch_status.setWordWrap(True)
         self.sort_mode_combo = QComboBox()
         self.sort_mode_combo.addItem("按文件名自然排序", VideoSortMode.NATURAL.value)
@@ -243,6 +280,7 @@ class MainWindow(QMainWindow):
         self.detect_button = QPushButton("检测")
         self.detect_button.clicked.connect(self.detect_tools)
         self.tool_status = QLabel("尚未检测")
+        self.tool_status.setObjectName("statusPanel")
         self.tool_status.setWordWrap(True)
         layout.addWidget(QLabel("FFmpeg"), 0, 0)
         layout.addWidget(self.ffmpeg_edit, 0, 1)
@@ -302,9 +340,9 @@ class MainWindow(QMainWindow):
         self.cover_edit = QLineEdit()
         self.cover_edit.setReadOnly(True)
         self.cover_preview = QLabel("无封面")
+        self.cover_preview.setObjectName("coverPreview")
         self.cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_preview.setFixedSize(90, 120)
-        self.cover_preview.setStyleSheet("border: 1px solid palette(mid);")
         self.subtitle_edit = QLineEdit()
         self.subtitle_edit.setReadOnly(True)
         self.logo_edit = QLineEdit()
@@ -322,6 +360,7 @@ class MainWindow(QMainWindow):
         self.music_edit = QLineEdit()
         self.music_edit.setReadOnly(True)
         self.music_info = QLabel("无配乐")
+        self.music_info.setObjectName("mutedText")
         cover_button = QPushButton("选择封面…")
         logo_button = QPushButton("选择 Logo…")
         subtitle_button = QPushButton("选择字幕…")
@@ -330,6 +369,8 @@ class MainWindow(QMainWindow):
         clear_logo = QPushButton("清除")
         clear_subtitle = QPushButton("清除")
         clear_music = QPushButton("清除")
+        for button in (clear_cover, clear_logo, clear_subtitle, clear_music):
+            button.setObjectName("quietButton")
         cover_button.clicked.connect(self._choose_cover)
         logo_button.clicked.connect(self._choose_logo)
         subtitle_button.clicked.connect(self._choose_subtitle)
@@ -481,6 +522,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("高级剪辑设置（全部为本地 FFmpeg 非 AI 处理）")
         outer = QVBoxLayout(group)
         tabs = QTabWidget()
+        tabs.setDocumentMode(True)
         outer.addWidget(tabs)
 
         visual = QWidget()
@@ -697,6 +739,7 @@ class MainWindow(QMainWindow):
         preview_button = QPushButton("生成当前选中视频预览")
         preview_button.clicked.connect(self.generate_preview)
         self.preview_status = QLabel("预览只生成一张静帧，不会编码完整视频。")
+        self.preview_status.setObjectName("mutedText")
         self.preview_status.setWordWrap(True)
         side.addWidget(preview_button)
         side.addWidget(self.preview_status)
@@ -714,6 +757,7 @@ class MainWindow(QMainWindow):
         self.output_name_label = QLabel("文件名")
         self.filename_edit = QLineEdit(self._manual_filename)
         self.estimate_label = QLabel("预计总时长：请添加视频（最终以 FFprobe 实测为准）")
+        self.estimate_label.setObjectName("infoPanel")
         self.estimate_label.setWordWrap(True)
         layout.addWidget(QLabel("输出目录"), 0, 0)
         layout.addWidget(self.output_dir_edit, 0, 1)
@@ -724,13 +768,22 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_run_group(self) -> QGroupBox:
-        group = QGroupBox("任务")
+        group = QGroupBox()
+        group.setObjectName("actionPanel")
+        group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
         buttons = QHBoxLayout()
+        task_heading = QLabel("任务控制")
+        task_heading.setObjectName("sectionTitle")
         self.start_button = QPushButton("开始剪辑")
+        self.start_button.setObjectName("primaryButton")
         self.cancel_button = QPushButton("取消任务")
+        self.cancel_button.setObjectName("dangerButton")
         self.open_button = QPushButton("打开输出文件夹")
         self.download_log_button = QPushButton("下载日志…")
+        self.toggle_log_button = QPushButton("隐藏日志")
         self.retry_button = QPushButton("仅重试失败任务")
         self.cancel_button.setEnabled(False)
         self.open_button.setEnabled(False)
@@ -740,26 +793,37 @@ class MainWindow(QMainWindow):
         self.cancel_button.clicked.connect(self.cancel_render)
         self.open_button.clicked.connect(self.open_output_folder)
         self.download_log_button.clicked.connect(self.download_logs)
+        self.toggle_log_button.clicked.connect(self._toggle_log_view)
         self.retry_button.clicked.connect(self.retry_failed_tasks)
+        buttons.addWidget(task_heading)
+        buttons.addSpacing(6)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.download_log_button)
+        buttons.addWidget(self.toggle_log_button)
         buttons.addWidget(self.retry_button)
         buttons.addStretch(1)
         self.stage_label = QLabel("就绪")
+        self.stage_label.setObjectName("stageLabel")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         # Keep the whole current run so “下载日志” never exports a truncated view.
         self.log_view.setMaximumBlockCount(0)
-        self.log_view.setMinimumHeight(130)
+        self.log_view.setFixedHeight(92)
         layout.addLayout(buttons)
         layout.addWidget(self.stage_label)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.log_view)
         return group
+
+    def _toggle_log_view(self) -> None:
+        visible = not self.log_view.isVisible()
+        self.log_view.setVisible(visible)
+        self.toggle_log_button.setText("隐藏日志" if visible else "显示日志")
 
     def _on_mode_changed(self, *_args: object) -> None:
         if not hasattr(self, "batch_group"):

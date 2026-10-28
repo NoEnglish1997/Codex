@@ -12,10 +12,10 @@ class PositionPreviewLabel(QLabel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setObjectName("previewCanvas")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setFixedSize(270, 480)
         self.setText("点击“生成预览”查看画面\n拖动画面可设置自定义位置")
-        self.setStyleSheet("border: 1px solid palette(mid); background: #181818; color: #dddddd;")
         self.setMouseTracking(True)
         self._dragging = False
 
