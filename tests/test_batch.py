@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from auto_video_editor.media.batch import batch_output_filename, natural_sort_key, scan_batch_root
+from auto_video_editor.media.batch import (
+    batch_output_filename,
+    natural_sort_key,
+    scan_batch_root,
+    settings_for_batch_source,
+    video_items_for_batch_source,
+)
+from auto_video_editor.models import RenderSettings, VideoSortMode
 
 
 def _touch(folder: Path, name: str) -> Path:
@@ -81,3 +88,40 @@ def test_batch_output_index_is_one_based():
 def test_natural_sort_key_is_case_insensitive():
     names = [Path("B10"), Path("b2"), Path("A1")]
     assert [path.name for path in sorted(names, key=natural_sort_key)] == ["A1", "b2", "B10"]
+
+
+def test_output_template_supports_prefix_folder_index_and_date():
+    assert batch_output_filename(
+        "成片_", 3, folder_name="任务A", template="{prefix}{folder}_{index}_{date}",
+        date_text="20261028",
+    ) == "成片_任务A_3_20261028.mp4"
+
+
+def test_blank_output_template_falls_back_to_default():
+    assert batch_output_filename("成片_", 2, template="   ") == "成片_2.mp4"
+
+
+def test_folder_config_controls_order_trims_and_settings(tmp_path):
+    folder = _valid_folder(tmp_path, "任务")
+    (folder / "config.json").write_text(
+        '{"video_order":["片段10.mp4","片段2.MP4"],'
+        '"trims":{"片段10.mp4":{"start":0.5,"end":2.5}},'
+        '"settings":{"music_volume":0.2,"sharpen_amount":0.8}}',
+        encoding="utf-8",
+    )
+    result = scan_batch_root(tmp_path, sort_mode=VideoSortMode.CONFIG)
+    assert not result.issues
+    source = result.sources[0]
+    assert [path.name for path in source.video_paths] == ["片段10.mp4", "片段2.MP4"]
+    items = video_items_for_batch_source(source)
+    assert (items[0].trim_start_seconds, items[0].trim_end_seconds) == (0.5, 2.5)
+    settings = settings_for_batch_source(RenderSettings(), source)
+    assert settings.music_volume == 0.2
+    assert settings.sharpen_amount == 0.8
+
+
+def test_random_order_is_deterministic(tmp_path):
+    _valid_folder(tmp_path, "任务")
+    first = scan_batch_root(tmp_path, sort_mode=VideoSortMode.RANDOM)
+    second = scan_batch_root(tmp_path, sort_mode=VideoSortMode.RANDOM)
+    assert first.sources[0].video_paths == second.sources[0].video_paths

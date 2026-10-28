@@ -62,4 +62,5 @@ def test_batch_worker_continues_after_one_render_failure(tmp_path):
         ("预检失败目录", "缺少字幕"),
         ("素材2", "模拟 FFmpeg 失败"),
     ]
+    assert [task.source_dir.name for task in completed[0].retry_tasks] == ["素材2"]
     assert progress[-1] == ("批量任务完成", 100)

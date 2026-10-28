@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .models import InterpolationMode, MusicShortPolicy, OutputQuality, SourceAudioMode, VideoEncoder
+from .models import (
+    InterpolationMode,
+    MusicShortPolicy,
+    OutputQuality,
+    SourceAudioMode,
+    VideoEncoder,
+    VideoSortMode,
+)
 from .utils.paths import config_dir, default_output_dir
 
 
@@ -16,6 +23,12 @@ class AppSettings:
     output_dir: str = ""
     batch_input_dir: str = ""
     output_prefix: str = "成片_"
+    output_template: str = "{prefix}{index}.mp4"
+    video_sort_mode: str = VideoSortMode.NATURAL.value
+    first_video_pattern: str = ""
+    last_video_pattern: str = ""
+    watch_enabled: bool = False
+    watch_interval_seconds: int = 5
     interpolation_mode: str = InterpolationMode.MOTION.value
     source_audio_mode: str = SourceAudioMode.MUTE.value
     music_short_policy: str = MusicShortPolicy.LOOP.value
@@ -28,6 +41,7 @@ class AppSettings:
     logo_opacity_percent: int = 100
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
+    render_profile: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def defaults(cls) -> "AppSettings":
@@ -54,6 +68,9 @@ class AppSettings:
         output_quality = str(raw.get("output_quality", defaults.output_quality))
         if output_quality not in {item.value for item in OutputQuality}:
             output_quality = defaults.output_quality
+        sort_mode = str(raw.get("video_sort_mode", defaults.video_sort_mode))
+        if sort_mode not in {item.value for item in VideoSortMode}:
+            sort_mode = defaults.video_sort_mode
         try:
             volume = min(1.0, max(0.0, float(raw.get("music_volume", defaults.music_volume))))
         except (TypeError, ValueError):
@@ -67,6 +84,29 @@ class AppSettings:
         output_prefix = str(raw.get("output_prefix", defaults.output_prefix)).strip()
         if not output_prefix or len(output_prefix) > 128 or "\n" in output_prefix or "\r" in output_prefix:
             output_prefix = defaults.output_prefix
+        output_template = str(raw.get("output_template", defaults.output_template)).strip()
+        if (
+            not output_template
+            or len(output_template) > 256
+            or "\n" in output_template
+            or "\r" in output_template
+        ):
+            output_template = defaults.output_template
+        first_pattern = str(raw.get("first_video_pattern", "") or "").strip()[:128]
+        last_pattern = str(raw.get("last_video_pattern", "") or "").strip()[:128]
+        watch_enabled = raw.get("watch_enabled", defaults.watch_enabled)
+        if not isinstance(watch_enabled, bool):
+            watch_enabled = defaults.watch_enabled
+        try:
+            watch_interval = min(
+                300,
+                max(2, int(raw.get("watch_interval_seconds", defaults.watch_interval_seconds))),
+            )
+        except (TypeError, ValueError):
+            watch_interval = defaults.watch_interval_seconds
+        render_profile = raw.get("render_profile", {})
+        if not isinstance(render_profile, dict):
+            render_profile = {}
         try:
             logo_scale = min(300, max(10, int(raw.get("logo_scale_percent", defaults.logo_scale_percent))))
         except (TypeError, ValueError):
@@ -82,6 +122,12 @@ class AppSettings:
             output_dir=str(output),
             batch_input_dir=str(raw.get("batch_input_dir", "") or ""),
             output_prefix=output_prefix,
+            output_template=output_template,
+            video_sort_mode=sort_mode,
+            first_video_pattern=first_pattern,
+            last_video_pattern=last_pattern,
+            watch_enabled=watch_enabled,
+            watch_interval_seconds=watch_interval,
             interpolation_mode=interpolation,
             source_audio_mode=source_audio,
             music_short_policy=music_policy,
@@ -94,6 +140,7 @@ class AppSettings:
             logo_opacity_percent=logo_opacity,
             ffmpeg_path=str(raw.get("ffmpeg_path", "") or ""),
             ffprobe_path=str(raw.get("ffprobe_path", "") or ""),
+            render_profile=render_profile,
         )
 
 

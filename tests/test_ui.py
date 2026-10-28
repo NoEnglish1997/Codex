@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from auto_video_editor.models import InterpolationMode, OutputQuality
+from auto_video_editor.models import CanvasMode, InterpolationMode, OutputQuality, TransitionType
 from auto_video_editor.models import ProbeInfo, VideoItem
 from auto_video_editor.ui.main_window import MainWindow
 from auto_video_editor.ui.video_list_widget import VideoListWidget
@@ -43,6 +43,33 @@ def test_video_list_preserves_manual_order_and_duplicates():
     widget.move_selected(-1)
     assert widget.indexOfTopLevelItem(widget.currentItem()) == 1
     widget.close()
+    app.processEvents()
+
+
+def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
+    window = MainWindow()
+    window._select_combo(window.transition_type_combo, TransitionType.WIPE_LEFT.value)
+    window.transition_seconds.setValue(0.5)
+    window._select_combo(window.canvas_mode_combo, CanvasMode.CROP.value)
+    window.sharpen.setValue(0.8)
+    window.normalize_audio.setChecked(True)
+    window.duck_music.setChecked(True)
+    window.cover_title.setText("结构安全")
+    window.highlight_words.setText("安全，结构")
+
+    settings = window._render_settings()
+    assert settings.transition_type == TransitionType.WIPE_LEFT
+    assert settings.transition_frames == 30
+    assert settings.canvas_mode == CanvasMode.CROP
+    assert settings.sharpen_amount == 0.8
+    assert settings.normalize_audio is True
+    assert settings.duck_music_under_source is True
+    assert settings.cover_title == "结构安全"
+    assert settings.subtitle_style.highlight_words == ("安全", "结构")
+    window.close()
     app.processEvents()
 
 

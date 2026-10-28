@@ -31,16 +31,18 @@ from .audio import (
     build_single_pass_audio_filtergraph,
     build_source_acrossfade_filtergraph,
 )
+from .clips import effective_clip_frames, effective_clip_range, trailing_black_start
 from .encoding import build_filtergraph_args, build_video_encoding_args
 from .ffprobe import ProbeError, probe_media
 from .progress import CancellationToken, run_ffmpeg
-from .subtitles import prepare_subtitles
+from .subtitles import prepare_cover_title, prepare_subtitles
 from .timeline import calculate_timeline
 from .validation import validate_render_job
 from .verify import verify_output
 from .video_filters import (
     build_cover_concat_filtergraph,
     build_cover_filter,
+    escape_filter_path,
     build_final_video_filter,
     build_normalization_filter,
     build_single_pass_video_filtergraph,
@@ -107,7 +109,7 @@ class Renderer:
             emit("预检", 0)
             if not self.capabilities.ready:
                 raise RenderError(f"FFmpeg 缺少必需能力：{', '.join(self.capabilities.missing_required)}")
-            prepared_job = self._probe_job(job, log)
+            prepared_job = self._probe_job(job, log, cancel_token)
             errors = [
                 issue.message
                 for issue in validate_render_job(prepared_job)
@@ -125,12 +127,17 @@ class Renderer:
             probes = tuple(item.probe for item in prepared_job.video_items)
             assert all(probe is not None for probe in probes)
             typed_probes = tuple(probe for probe in probes if probe is not None)
+            clip_ranges = tuple(
+                effective_clip_range(item, probe, prepared_job.settings)
+                for item, probe in zip(prepared_job.video_items, typed_probes, strict=True)
+            )
             frame_counts = tuple(
-                normalized_frame_count(probe, prepared_job.settings) for probe in typed_probes
+                effective_clip_frames(item, probe, prepared_job.settings)
+                for item, probe in zip(prepared_job.video_items, typed_probes, strict=True)
             )
             timeline = calculate_timeline(
                 frame_counts,
-                prepared_job.cover_path is not None,
+                prepared_job.cover_path is not None and prepared_job.settings.cover_frames > 0,
                 fps=prepared_job.settings.fps,
                 transition_frames=prepared_job.settings.transition_frames,
                 cover_frames=prepared_job.settings.cover_frames,
@@ -148,6 +155,12 @@ class Renderer:
                     style=prepared_job.settings.subtitle_style,
                 )
                 log(f"字幕已准备，时间偏移 {timeline.subtitle_offset_seconds:.9f} 秒。")
+            cover_title_path = prepare_cover_title(
+                prepared_job.settings.cover_title,
+                temporary_dir,
+                duration_seconds=timeline.cover_frames / timeline.fps,
+                font_name=prepared_job.settings.subtitle_style.font_name,
+            )
             cover_probe = (
                 probe_media(prepared_job.cover_path, self.capabilities.ffprobe_path)
                 if prepared_job.cover_path is not None
@@ -159,6 +172,7 @@ class Renderer:
                 temporary_dir,
                 cancel_token,
                 log,
+                cover_title_path=cover_title_path,
             )
             encoder = self._encode_single_pass(
                 typed_probes,
@@ -171,6 +185,8 @@ class Renderer:
                 cancel_token,
                 emit,
                 log,
+                clip_ranges=clip_ranges,
+                cover_title_path=cover_title_path,
             )
             emit("核验输出", 99)
             expected = ExpectedOutput(
@@ -223,11 +239,24 @@ class Renderer:
                 shutil.rmtree(temporary_dir, ignore_errors=True)
             log_handle.close()
 
-    def _probe_job(self, job: RenderJob, log: LogCallback) -> RenderJob:
+    def _probe_job(
+        self,
+        job: RenderJob,
+        log: LogCallback,
+        token: CancellationToken,
+    ) -> RenderJob:
         items: list[VideoItem] = []
         for item in job.video_items:
             probe = probe_media(item.source_path, self.capabilities.ffprobe_path)
-            items.append(replace(item, probe=probe))
+            prepared_item = replace(item, probe=probe)
+            if job.settings.trim_trailing_black:
+                detected = self._detect_trailing_black(item.source_path, probe.duration_seconds, token, log)
+                if detected is not None and detected > item.trim_start_seconds:
+                    current_end = item.trim_end_seconds if item.trim_end_seconds > 0 else probe.duration_seconds
+                    if detected < current_end:
+                        prepared_item = replace(prepared_item, trim_end_seconds=detected)
+                        log(f"末尾黑帧检测：{item.display_name} 将在 {detected:.3f}s 结束。")
+            items.append(prepared_item)
             log(
                 f"素材：{item.display_name}，{probe.display_width}×{probe.display_height}，"
                 f"{probe.duration_seconds:.3f}s，{probe.avg_frame_rate} FPS，音轨={'有' if probe.has_audio else '无'}"
@@ -247,6 +276,26 @@ class Renderer:
                 raise RenderError("配乐文件没有可解码音轨。")
             log(f"配乐：{job.music_path.name}，{music_probe.duration_seconds:.3f}s")
         return replace(job, video_items=tuple(items))
+
+    def _detect_trailing_black(
+        self,
+        path: Path,
+        duration_seconds: float,
+        token: CancellationToken,
+        log: LogCallback,
+    ) -> float | None:
+        args = [
+            str(self.capabilities.ffmpeg_path), "-hide_banner", "-loglevel", "info", "-i", str(path),
+            "-vf", "blackdetect=d=0.2:pic_th=0.98", "-an", "-f", "null",
+            "-",
+        ]
+        result = run_ffmpeg(args, token, None, log_callback=log)
+        if result.cancelled:
+            raise RenderCancelled("任务已取消")
+        if not result.succeeded:
+            log(f"末尾黑帧检测失败，保留原时长：{path.name}")
+            return None
+        return trailing_black_start(result.stderr, duration_seconds)
 
     def _check_disk_space(self, job: RenderJob, log: LogCallback) -> None:
         source_bytes = sum(item.source_path.stat().st_size for item in job.video_items if item.source_path.exists())
@@ -445,7 +494,8 @@ class Renderer:
         still_filter = build_cover_filter(cover_probe.width, cover_probe.height, job.settings)
         still_args = [
             str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", "-i", str(job.cover_path),
-            "-vf", still_filter, "-frames:v", "1", "-q:v", "2", "-update", "1",
+            "-vf", still_filter, "-frames:v", "1", "-pix_fmt", "yuvj420p",
+            "-q:v", "2", "-update", "1",
             "-loglevel", "error", str(cover_jpg),
         ]
         self._run(still_args, token, None, None, log)
@@ -472,17 +522,29 @@ class Renderer:
         temporary_dir: Path,
         token: CancellationToken,
         log: LogCallback,
+        *,
+        cover_title_path: Path | None = None,
     ) -> Path | None:
-        if job.cover_path is None or cover_probe is None:
+        if (
+            job.cover_path is None
+            or cover_probe is None
+            or not job.settings.export_cover_image
+        ):
             return None
         cover_jpg = temporary_dir / "cover.jpg"
         still_filter = build_cover_filter(cover_probe.width, cover_probe.height, job.settings)
+        if cover_title_path is not None:
+            still_filter += f",subtitles=filename='{escape_filter_path(cover_title_path)}'"
         args = [
-            str(self.capabilities.ffmpeg_path), "-hide_banner", "-y", "-i", str(job.cover_path),
-            "-vf", still_filter, "-frames:v", "1", "-q:v", "2", "-update", "1",
+            str(self.capabilities.ffmpeg_path), "-hide_banner", "-y",
+            "-loop", "1", "-framerate", str(job.settings.fps), "-i", str(job.cover_path),
+            "-vf", still_filter, "-frames:v", "1", "-pix_fmt", "yuvj420p",
+            "-q:v", "2", "-update", "1",
             "-loglevel", "error", str(cover_jpg),
         ]
         self._run(args, token, None, None, log)
+        if not cover_jpg.is_file() or cover_jpg.stat().st_size == 0:
+            raise RenderError("封面图片导出失败：FFmpeg 未生成有效的 cover.jpg")
         return cover_jpg
 
     def _encode_single_pass(
@@ -497,6 +559,9 @@ class Renderer:
         token: CancellationToken,
         emit: Callable[[str, float], None],
         log: LogCallback,
+        *,
+        clip_ranges: tuple[tuple[float, float], ...],
+        cover_title_path: Path | None,
     ) -> str:
         audio_plan = build_audio_plan(job, timeline)
         inputs: list[str] = []
@@ -507,7 +572,11 @@ class Renderer:
 
         next_index = len(job.video_items)
         cover_input: tuple[int, int, int] | None = None
-        if job.cover_path is not None and cover_probe is not None:
+        if (
+            job.cover_path is not None
+            and cover_probe is not None
+            and job.settings.cover_frames > 0
+        ):
             cover_input = (next_index, cover_probe.width, cover_probe.height)
             inputs.extend(
                 [
@@ -544,12 +613,15 @@ class Renderer:
             subtitle_path,
             cover_input=cover_input,
             logo_input_index=logo_index,
+            clip_ranges=clip_ranges,
+            cover_title_path=cover_title_path,
         )
         audio_graph = build_single_pass_audio_filtergraph(
             audio_plan,
             timeline,
             source_input_indices=tuple(source_audio_indices),
             music_input_index=music_index,
+            clip_ranges=clip_ranges,
         )
         graph = video_graph
         audio_label: str | None = None
@@ -811,6 +883,13 @@ class Renderer:
             "cover": cover_path.name if cover_path else None,
             "logo": job.logo_path.name if job.logo_path else None,
             "source_order": [item.display_name for item in job.video_items],
+            "source_trims": [
+                {
+                    "start_seconds": item.trim_start_seconds,
+                    "end_seconds": item.trim_end_seconds,
+                }
+                for item in job.video_items
+            ],
             "encoder": encoder,
             "pipeline": "single_pass",
             "video_encode_passes": 1,
@@ -819,19 +898,69 @@ class Renderer:
                 "height": job.settings.height,
                 "fps": job.settings.fps,
                 "transition_frames": job.settings.transition_frames,
+                "transition_type": job.settings.transition_type.value,
                 "cover_frames": timeline.cover_frames,
+                "cover_fadein_seconds": job.settings.cover_fadein_seconds,
+                "cover_zoom_percent": job.settings.cover_zoom_percent,
+                "cover_title": job.settings.cover_title,
+                "export_cover_image": job.settings.export_cover_image,
                 "interpolation_mode": job.settings.interpolation_mode.value,
                 "source_audio_mode": job.settings.source_audio_mode.value,
+                "music_short_policy": job.settings.music_short_policy.value,
                 "music_volume": job.settings.music_volume,
+                "music_fadein_seconds": job.settings.music_fadein_seconds,
+                "music_fadeout_seconds": job.settings.music_fadeout_seconds,
+                "normalize_audio": job.settings.normalize_audio,
+                "loudness_target_lufs": job.settings.loudness_target_lufs,
+                "duck_music_under_source": job.settings.duck_music_under_source,
+                "video_encoder": job.settings.video_encoder.value,
                 "output_quality": job.settings.output_quality.value,
                 "mirror_second_clip": job.settings.mirror_second_clip,
+                "canvas_mode": job.settings.canvas_mode.value,
+                "canvas_position": job.settings.canvas_position.value,
+                "canvas_x_percent": job.settings.canvas_x_percent,
+                "canvas_y_percent": job.settings.canvas_y_percent,
+                "canvas_color": job.settings.canvas_color,
+                "sharpen_amount": job.settings.sharpen_amount,
+                "denoise_strength": job.settings.denoise_strength,
+                "brightness": job.settings.brightness,
+                "contrast": job.settings.contrast,
+                "saturation": job.settings.saturation,
+                "shadow_boost": job.settings.shadow_boost,
+                "highlight_protection": job.settings.highlight_protection,
+                "clip_max_duration_seconds": job.settings.clip_max_duration_seconds,
+                "trim_trailing_black": job.settings.trim_trailing_black,
                 "mirrored_clip_indices": [2]
                 if job.settings.mirror_second_clip and len(job.video_items) >= 2
                 else [],
                 "subtitle_font_name": job.settings.subtitle_style.font_name,
+                "subtitle_style": {
+                    "font_size": job.settings.subtitle_style.font_size,
+                    "primary_color": job.settings.subtitle_style.primary_color,
+                    "outline_color": job.settings.subtitle_style.outline_color,
+                    "outline_width": job.settings.subtitle_style.outline_width,
+                    "margin_bottom": job.settings.subtitle_style.margin_bottom,
+                    "margin_horizontal": job.settings.subtitle_style.margin_horizontal,
+                    "shadow_depth": job.settings.subtitle_style.shadow_depth,
+                    "background_opacity_percent": job.settings.subtitle_style.background_opacity_percent,
+                    "max_chars_per_line": job.settings.subtitle_style.max_chars_per_line,
+                    "highlight_words": list(job.settings.subtitle_style.highlight_words),
+                    "highlight_color": job.settings.subtitle_style.highlight_color,
+                },
                 "logo_start_frame": job.settings.logo_start_frame if job.logo_path else None,
                 "logo_scale_percent": job.settings.logo_scale_percent if job.logo_path else None,
                 "logo_opacity_percent": job.settings.logo_opacity_percent if job.logo_path else None,
+                "logo_motion": job.settings.logo_motion.value if job.logo_path else None,
+                "logo_end_frame": job.settings.logo_end_frame if job.logo_path else None,
+                "logo_fade_seconds": job.settings.logo_fade_seconds if job.logo_path else None,
+                "logo_start_position_percent": [
+                    job.settings.logo_start_x_percent,
+                    job.settings.logo_start_y_percent,
+                ] if job.logo_path else None,
+                "logo_end_position_percent": [
+                    job.settings.logo_end_x_percent,
+                    job.settings.logo_end_y_percent,
+                ] if job.logo_path else None,
             },
             "timeline": {
                 "clip_frames": list(timeline.frame_counts),

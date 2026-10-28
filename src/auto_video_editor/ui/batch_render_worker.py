@@ -40,6 +40,7 @@ class BatchRenderWorker(QObject):
     def run(self) -> None:
         successes: list[RenderResult] = []
         failures = list(self.initial_failures)
+        retry_tasks: list[BatchRenderTask] = []
         total = len(self.tasks)
         try:
             for index, task in enumerate(self.tasks, 1):
@@ -68,11 +69,14 @@ class BatchRenderWorker(QObject):
                 except Exception as exc:
                     message = str(exc)
                     failures.append(BatchFailure(task.source_dir.name, message))
+                    retry_tasks.append(task)
                     self.log.emit(f"失败：{task.source_dir.name}：{message}")
                     continue
 
             self.progress.emit("批量任务完成", 100)
-            self.completed.emit(BatchRenderSummary(tuple(successes), tuple(failures)))
+            self.completed.emit(
+                BatchRenderSummary(tuple(successes), tuple(failures), tuple(retry_tasks))
+            )
         except RenderCancelled:
             self.cancelled.emit()
         except Exception as exc:

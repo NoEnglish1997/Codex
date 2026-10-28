@@ -36,6 +36,48 @@ class OutputQuality(str, Enum):
     BITRATE_20M = "bitrate_20m"
 
 
+class TransitionType(str, Enum):
+    NONE = "none"
+    FADE = "fade"
+    SLIDE_LEFT = "slideleft"
+    WIPE_LEFT = "wipeleft"
+    ZOOM_IN = "zoomin"
+
+
+class CanvasMode(str, Enum):
+    BLUR = "blur"
+    CROP = "crop"
+    SOLID = "solid"
+
+
+class CanvasPosition(str, Enum):
+    CENTER = "center"
+    LEFT = "left"
+    RIGHT = "right"
+    TOP = "top"
+    BOTTOM = "bottom"
+    CUSTOM = "custom"
+
+
+class LogoMotion(str, Enum):
+    TOP_RIGHT_TO_BOTTOM_LEFT = "top_right_to_bottom_left"
+    TOP_LEFT_TO_BOTTOM_RIGHT = "top_left_to_bottom_right"
+    BOTTOM_LEFT_TO_TOP_RIGHT = "bottom_left_to_top_right"
+    FIXED_TOP_RIGHT = "fixed_top_right"
+    FIXED_TOP_LEFT = "fixed_top_left"
+    FIXED_BOTTOM_RIGHT = "fixed_bottom_right"
+    FIXED_BOTTOM_LEFT = "fixed_bottom_left"
+    CUSTOM = "custom"
+
+
+class VideoSortMode(str, Enum):
+    NATURAL = "natural"
+    CREATED = "created"
+    MODIFIED = "modified"
+    CONFIG = "config"
+    RANDOM = "random"
+
+
 class IssueSeverity(str, Enum):
     ERROR = "error"
     WARNING = "warning"
@@ -76,6 +118,8 @@ class VideoItem:
     source_path: Path
     display_name: str
     probe: ProbeInfo | None = None
+    trim_start_seconds: float = 0.0
+    trim_end_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -86,6 +130,12 @@ class SubtitleStyle:
     outline_color: str = "#000000"
     outline_width: int = 5
     margin_bottom: int = 180
+    margin_horizontal: int = 60
+    shadow_depth: int = 0
+    background_opacity_percent: int = 0
+    max_chars_per_line: int = 18
+    highlight_words: tuple[str, ...] = ()
+    highlight_color: str = "#FFD400"
 
 
 @dataclass(frozen=True)
@@ -94,18 +144,48 @@ class RenderSettings:
     height: int = 2560
     fps: int = 60
     transition_frames: int = 60
+    transition_type: TransitionType = TransitionType.FADE
     cover_frames: int = 5
+    cover_fadein_seconds: float = 0.0
+    cover_zoom_percent: int = 100
+    cover_title: str = ""
+    export_cover_image: bool = True
     interpolation_mode: InterpolationMode = InterpolationMode.MOTION
     source_audio_mode: SourceAudioMode = SourceAudioMode.MUTE
     music_short_policy: MusicShortPolicy = MusicShortPolicy.LOOP
     music_volume: float = 0.35
+    music_fadein_seconds: float = 0.0
     music_fadeout_seconds: float = 1.0
+    normalize_audio: bool = False
+    loudness_target_lufs: float = -16.0
+    duck_music_under_source: bool = False
     video_encoder: VideoEncoder = VideoEncoder.AUTO
     output_quality: OutputQuality = OutputQuality.STANDARD
     mirror_second_clip: bool = True
+    clip_max_duration_seconds: float = 0.0
+    trim_trailing_black: bool = False
+    canvas_mode: CanvasMode = CanvasMode.BLUR
+    canvas_position: CanvasPosition = CanvasPosition.CENTER
+    canvas_x_percent: int = 50
+    canvas_y_percent: int = 50
+    canvas_color: str = "#000000"
+    sharpen_amount: float = 0.45
+    denoise_strength: float = 0.0
+    brightness: float = 0.0
+    contrast: float = 1.0
+    saturation: float = 1.0
+    shadow_boost: float = 0.0
+    highlight_protection: float = 0.0
     subtitle_enabled: bool = True
     subtitle_style: SubtitleStyle = field(default_factory=SubtitleStyle)
     logo_start_frame: int = 5
+    logo_end_frame: int = 0
+    logo_motion: LogoMotion = LogoMotion.TOP_RIGHT_TO_BOTTOM_LEFT
+    logo_start_x_percent: int = 100
+    logo_start_y_percent: int = 0
+    logo_end_x_percent: int = 0
+    logo_end_y_percent: int = 100
+    logo_fade_seconds: float = 0.0
     logo_max_width: int = 240
     logo_max_height: int = 240
     logo_scale_percent: int = 100
@@ -165,6 +245,10 @@ class AudioPlan:
     music_volume: float
     fadeout_start_seconds: float | None
     fadeout_duration_seconds: float
+    fadein_duration_seconds: float = 0.0
+    normalize_audio: bool = False
+    loudness_target_lufs: float = -16.0
+    duck_music_under_source: bool = False
 
 
 @dataclass(frozen=True)
@@ -223,6 +307,7 @@ class BatchFailure:
 class BatchRenderSummary:
     successes: tuple[RenderResult, ...]
     failures: tuple[BatchFailure, ...]
+    retry_tasks: tuple[BatchRenderTask, ...] = ()
 
 
 @dataclass(frozen=True)

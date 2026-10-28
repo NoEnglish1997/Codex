@@ -4,12 +4,13 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QUrl
+from PySide6.QtCore import QProcess, QThread, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFontComboBox,
     QGridLayout,
@@ -19,23 +20,34 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QInputDialog,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..config import SettingsStore
-from ..media.batch import batch_output_filename, scan_batch_root
+from ..media.batch import (
+    batch_output_filename,
+    scan_batch_root,
+    settings_for_batch_source,
+    video_items_for_batch_source,
+)
+from ..media.clips import effective_clip_range
+from ..media.estimates import estimate_export
 from ..media.ffmpeg_locator import detect_capabilities
 from ..media.ffprobe import ProbeError, probe_media
 from ..media.timeline import calculate_timeline
 from ..media.validation import VIDEO_EXTENSIONS, validate_render_job
 from ..models import (
+    CanvasMode,
+    CanvasPosition,
     FFmpegCapabilities,
     BatchFailure,
     BatchRenderSummary,
@@ -43,42 +55,69 @@ from ..models import (
     InterpolationMode,
     IssueSeverity,
     MusicShortPolicy,
+    LogoMotion,
     OutputQuality,
     RenderJob,
     RenderResult,
     RenderSettings,
     SourceAudioMode,
     SubtitleStyle,
+    TransitionType,
     VideoEncoder,
     VideoItem,
+    VideoSortMode,
 )
+from ..presets import (
+    BUILTIN_PRESETS,
+    PresetStore,
+    render_settings_from_mapping,
+    render_settings_to_mapping,
+)
+from ..media.video_filters import build_enhancement_filter, build_normalization_filter
+from ..media.watcher import FolderStabilityTracker
 from ..utils.paths import config_dir, sanitize_output_filename
 from .batch_render_worker import BatchRenderWorker
 from .render_worker import RenderWorker
+from .preview_widget import PositionPreviewLabel
 from .video_list_widget import VideoListWidget
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V2.3")
+        self.setWindowTitle("自动视频剪辑 V3.0")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
         loaded = self._store.load()
         self._settings = loaded.settings
+        self._profile_settings = render_settings_from_mapping(self._settings.render_profile)
+        self._preset_store = PresetStore()
+        self._custom_presets = self._preset_store.load_custom()
         self._capabilities: FFmpegCapabilities | None = None
         self._thread: QThread | None = None
         self._worker: RenderWorker | BatchRenderWorker | None = None
         self._last_result: RenderResult | None = None
         self._last_output_dir: Path | None = None
+        self._last_manual_job: RenderJob | None = None
+        self._last_manual_failed = False
+        self._last_retry_tasks: tuple[BatchRenderTask, ...] = ()
+        self._current_batch_tasks: tuple[BatchRenderTask, ...] = ()
         self._close_after_render = False
         self._active_mode: str | None = None
         self._batch_prefix = self._settings.output_prefix
+        self._batch_template = self._settings.output_template
         self._manual_filename = f"edited_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
         self._primary_color = "#FFFFFF"
         self._outline_color = "#000000"
+        self._highlight_color = self._profile_settings.subtitle_style.highlight_color
+        self._preview_process: QProcess | None = None
+        self._preview_path = config_dir() / "preview.jpg"
+        self._watch_tracker = FolderStabilityTracker()
         self._build_ui()
+        self._watch_timer = QTimer(self)
+        self._watch_timer.timeout.connect(self._poll_watch_folder)
+        self._on_watch_toggled(self.watch_checkbox.isChecked())
         if loaded.warning:
             self._append_log(loaded.warning)
         self.detect_tools()
@@ -94,6 +133,7 @@ class MainWindow(QMainWindow):
         main.addWidget(header)
         main.addWidget(self._build_tools_group())
         main.addWidget(self._build_mode_group())
+        main.addWidget(self._build_preset_group())
         self.batch_group = self._build_batch_group()
         main.addWidget(self.batch_group)
         self.video_group = self._build_video_group()
@@ -101,6 +141,9 @@ class MainWindow(QMainWindow):
         self.optional_group = self._build_optional_group()
         main.addWidget(self.optional_group)
         main.addWidget(self._build_settings_group())
+        main.addWidget(self._build_advanced_group())
+        self.preview_group = self._build_preview_group()
+        main.addWidget(self.preview_group)
         self.output_group = self._build_output_group()
         main.addWidget(self.output_group)
         scroll.setWidget(self.config_widget)
@@ -124,6 +167,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.mode_combo, 1)
         return group
 
+    def _build_preset_group(self) -> QGroupBox:
+        group = QGroupBox("参数预设")
+        layout = QHBoxLayout(group)
+        self.preset_combo = QComboBox()
+        self._refresh_preset_combo()
+        apply_button = QPushButton("应用预设")
+        save_button = QPushButton("另存为预设…")
+        delete_button = QPushButton("删除自定义预设")
+        apply_button.clicked.connect(self._apply_selected_preset)
+        save_button.clicked.connect(self._save_custom_preset)
+        delete_button.clicked.connect(self._delete_custom_preset)
+        layout.addWidget(QLabel("常用方案"))
+        layout.addWidget(self.preset_combo, 1)
+        layout.addWidget(apply_button)
+        layout.addWidget(save_button)
+        layout.addWidget(delete_button)
+        return group
+
     def _build_batch_group(self) -> QGroupBox:
         group = QGroupBox("批量素材")
         layout = QGridLayout(group)
@@ -134,11 +195,40 @@ class MainWindow(QMainWindow):
         scan.clicked.connect(self.preview_batch)
         self.batch_status = QLabel("请选择包含多个素材子文件夹的总目录。")
         self.batch_status.setWordWrap(True)
+        self.sort_mode_combo = QComboBox()
+        self.sort_mode_combo.addItem("按文件名自然排序", VideoSortMode.NATURAL.value)
+        self.sort_mode_combo.addItem("按创建时间", VideoSortMode.CREATED.value)
+        self.sort_mode_combo.addItem("按修改时间", VideoSortMode.MODIFIED.value)
+        self.sort_mode_combo.addItem("按 config.json 指定", VideoSortMode.CONFIG.value)
+        self.sort_mode_combo.addItem("确定性随机顺序", VideoSortMode.RANDOM.value)
+        self._select_combo(self.sort_mode_combo, self._settings.video_sort_mode)
+        self.first_pattern_edit = QLineEdit(self._settings.first_video_pattern)
+        self.first_pattern_edit.setPlaceholderText("例如：开头*.mp4（可空）")
+        self.last_pattern_edit = QLineEdit(self._settings.last_video_pattern)
+        self.last_pattern_edit.setPlaceholderText("例如：结尾*.mp4（可空）")
+        self.output_template_edit = QLineEdit(self._settings.output_template)
+        self.output_template_edit.setPlaceholderText("{prefix}{folder}_{index}_{date}.mp4")
+        self.watch_checkbox = QCheckBox("监控新增子文件夹并自动处理")
+        self.watch_checkbox.setChecked(self._settings.watch_enabled)
+        self.watch_interval = QSpinBox()
+        self.watch_interval.setRange(2, 300)
+        self.watch_interval.setSuffix(" 秒")
+        self.watch_interval.setValue(self._settings.watch_interval_seconds)
+        self.watch_checkbox.toggled.connect(self._on_watch_toggled)
+        self.watch_interval.valueChanged.connect(self._restart_watch_timer)
         layout.addWidget(QLabel("素材总目录"), 0, 0)
         layout.addWidget(self.batch_root_edit, 0, 1)
         layout.addWidget(browse, 0, 2)
         layout.addWidget(scan, 0, 3)
-        layout.addWidget(self.batch_status, 1, 0, 1, 4)
+        layout.addWidget(QLabel("视频顺序"), 1, 0)
+        layout.addWidget(self.sort_mode_combo, 1, 1)
+        layout.addWidget(self.first_pattern_edit, 1, 2)
+        layout.addWidget(self.last_pattern_edit, 1, 3)
+        layout.addWidget(QLabel("命名模板"), 2, 0)
+        layout.addWidget(self.output_template_edit, 2, 1, 1, 3)
+        layout.addWidget(self.watch_checkbox, 3, 0, 1, 2)
+        layout.addWidget(self.watch_interval, 3, 2)
+        layout.addWidget(self.batch_status, 4, 0, 1, 4)
         return group
 
     def _build_tools_group(self) -> QGroupBox:
@@ -170,6 +260,7 @@ class MainWindow(QMainWindow):
         self.video_list = VideoListWidget()
         self.video_list.files_dropped.connect(self.add_video_paths)
         self.video_list.order_changed.connect(self._update_estimate)
+        self.video_list.itemSelectionChanged.connect(self._load_selected_trim)
         layout.addWidget(self.video_list)
         buttons = QHBoxLayout()
         for text, callback in (
@@ -183,6 +274,26 @@ class MainWindow(QMainWindow):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
+        trim_row = QHBoxLayout()
+        self.trim_start = QDoubleSpinBox()
+        self.trim_start.setRange(0, 36000)
+        self.trim_start.setDecimals(3)
+        self.trim_start.setSuffix(" 秒")
+        self.trim_end = QDoubleSpinBox()
+        self.trim_end.setRange(0, 36000)
+        self.trim_end.setDecimals(3)
+        self.trim_end.setSuffix(" 秒（0=结尾）")
+        apply_trim = QPushButton("应用到选中视频")
+        reset_trim = QPushButton("恢复完整时长")
+        apply_trim.clicked.connect(self._apply_selected_trim)
+        reset_trim.clicked.connect(self._reset_selected_trim)
+        trim_row.addWidget(QLabel("裁剪开始"))
+        trim_row.addWidget(self.trim_start)
+        trim_row.addWidget(QLabel("裁剪结束"))
+        trim_row.addWidget(self.trim_end)
+        trim_row.addWidget(apply_trim)
+        trim_row.addWidget(reset_trim)
+        layout.addLayout(trim_row)
         return group
 
     def _build_optional_group(self) -> QGroupBox:
@@ -227,7 +338,7 @@ class MainWindow(QMainWindow):
         clear_logo.clicked.connect(lambda: self._set_optional_path(self.logo_edit, "", "logo"))
         clear_subtitle.clicked.connect(lambda: self._set_optional_path(self.subtitle_edit, "", "subtitle"))
         clear_music.clicked.connect(lambda: self._set_optional_path(self.music_edit, "", "music"))
-        cover_label = QLabel("封面（精确 5 帧）")
+        cover_label = QLabel("封面图片")
         subtitle_label = QLabel("字幕（SRT/ASS）")
         music_label = QLabel("背景音乐")
         layout.addWidget(cover_label, 0, 0)
@@ -312,27 +423,29 @@ class MainWindow(QMainWindow):
         volume_widget.setLayout(volume_row)
 
         self.subtitle_enabled = QCheckBox("烧录硬字幕")
-        self.subtitle_enabled.setChecked(True)
+        self.subtitle_enabled.setChecked(self._profile_settings.subtitle_enabled)
         self.mirror_second_clip = QCheckBox("第 2 段视频水平镜像")
         self.mirror_second_clip.setChecked(self._settings.mirror_second_clip)
         self.font_combo = QFontComboBox()
-        self.font_combo.setCurrentFont(QFont(self._settings.subtitle_font_name))
+        self.font_combo.setCurrentFont(QFont(self._settings.subtitle_font_name or self._profile_settings.subtitle_style.font_name))
         self.font_size = QSpinBox()
         self.font_size.setRange(24, 140)
-        self.font_size.setValue(68)
+        self.font_size.setValue(self._profile_settings.subtitle_style.font_size)
         self.outline_width = QSpinBox()
         self.outline_width.setRange(0, 12)
-        self.outline_width.setValue(5)
+        self.outline_width.setValue(self._profile_settings.subtitle_style.outline_width)
         self.subtitle_margin = QSpinBox()
         self.subtitle_margin.setRange(0, 800)
-        self.subtitle_margin.setValue(180)
-        self.primary_color_button = QPushButton("文字 #FFFFFF")
-        self.outline_color_button = QPushButton("描边 #000000")
+        self.subtitle_margin.setValue(self._profile_settings.subtitle_style.margin_bottom)
+        self._primary_color = self._profile_settings.subtitle_style.primary_color
+        self._outline_color = self._profile_settings.subtitle_style.outline_color
+        self.primary_color_button = QPushButton(f"文字 {self._primary_color}")
+        self.outline_color_button = QPushButton(f"描边 {self._outline_color}")
         self.primary_color_button.clicked.connect(lambda: self._choose_color(True))
         self.outline_color_button.clicked.connect(lambda: self._choose_color(False))
 
         layout.addWidget(QLabel("固定输出"), 0, 0)
-        layout.addWidget(QLabel("1440×2560 / 9:16 / 60FPS / 1秒叠化 / 封面5帧"), 0, 1, 1, 3)
+        layout.addWidget(QLabel("1440×2560 / 9:16 / 60FPS；转场和封面时长可在高级设置调整"), 0, 1, 1, 3)
         layout.addWidget(QLabel("帧率转换"), 1, 0)
         layout.addWidget(self.interpolation_combo, 1, 1)
         layout.addWidget(QLabel("原声"), 1, 2)
@@ -343,7 +456,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.encoder_combo, 2, 3)
         layout.addWidget(QLabel("导出质量"), 3, 0)
         layout.addWidget(self.quality_combo, 3, 1, 1, 3)
-        layout.addWidget(QLabel("配乐音量（片尾淡出1秒）"), 4, 0)
+        layout.addWidget(QLabel("配乐音量"), 4, 0)
         layout.addWidget(volume_widget, 4, 1)
         layout.addWidget(self.mirror_second_clip, 4, 2, 1, 2)
         layout.addWidget(self.subtitle_enabled, 5, 0)
@@ -357,6 +470,239 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.subtitle_margin, 7, 1)
         layout.addWidget(self.primary_color_button, 7, 2)
         layout.addWidget(self.outline_color_button, 7, 3)
+        self.quality_combo.currentIndexChanged.connect(self._update_estimate)
+        self.subtitle_enabled.toggled.connect(self._update_subtitle_preview)
+        self.font_combo.currentFontChanged.connect(self._update_subtitle_preview)
+        self.font_size.valueChanged.connect(self._update_subtitle_preview)
+        self.outline_width.valueChanged.connect(self._update_subtitle_preview)
+        return group
+
+    def _build_advanced_group(self) -> QGroupBox:
+        group = QGroupBox("高级剪辑设置（全部为本地 FFmpeg 非 AI 处理）")
+        outer = QVBoxLayout(group)
+        tabs = QTabWidget()
+        outer.addWidget(tabs)
+
+        visual = QWidget()
+        visual_layout = QGridLayout(visual)
+        self.canvas_mode_combo = QComboBox()
+        self.canvas_mode_combo.addItem("模糊背景＋完整前景", CanvasMode.BLUR.value)
+        self.canvas_mode_combo.addItem("放大填满并裁切", CanvasMode.CROP.value)
+        self.canvas_mode_combo.addItem("纯色背景＋完整前景", CanvasMode.SOLID.value)
+        self.canvas_position_combo = QComboBox()
+        for text, value in (
+            ("居中", CanvasPosition.CENTER.value), ("靠左", CanvasPosition.LEFT.value),
+            ("靠右", CanvasPosition.RIGHT.value), ("靠上", CanvasPosition.TOP.value),
+            ("靠下", CanvasPosition.BOTTOM.value), ("自定义/预览拖动", CanvasPosition.CUSTOM.value),
+        ):
+            self.canvas_position_combo.addItem(text, value)
+        self.canvas_x = QSpinBox()
+        self.canvas_x.setRange(0, 100)
+        self.canvas_x.setSuffix("%")
+        self.canvas_y = QSpinBox()
+        self.canvas_y.setRange(0, 100)
+        self.canvas_y.setSuffix("%")
+        self.canvas_color_button = QPushButton(self._profile_settings.canvas_color)
+        self.canvas_color_button.clicked.connect(self._choose_canvas_color)
+        self.sharpen = QDoubleSpinBox()
+        self.sharpen.setRange(0, 2)
+        self.sharpen.setSingleStep(0.05)
+        self.sharpen.setDecimals(2)
+        self.denoise = QDoubleSpinBox()
+        self.denoise.setRange(0, 20)
+        self.denoise.setSingleStep(0.5)
+        self.brightness = QSpinBox()
+        self.brightness.setRange(-100, 100)
+        self.brightness.setSuffix("%")
+        self.contrast = QSpinBox()
+        self.contrast.setRange(50, 200)
+        self.contrast.setSuffix("%")
+        self.saturation = QSpinBox()
+        self.saturation.setRange(0, 300)
+        self.saturation.setSuffix("%")
+        self.shadow_boost = QSpinBox()
+        self.shadow_boost.setRange(0, 100)
+        self.shadow_boost.setSuffix("%")
+        self.highlight_protection = QSpinBox()
+        self.highlight_protection.setRange(0, 100)
+        self.highlight_protection.setSuffix("%")
+        visual_layout.addWidget(QLabel("画布方式"), 0, 0)
+        visual_layout.addWidget(self.canvas_mode_combo, 0, 1)
+        visual_layout.addWidget(QLabel("前景/裁切位置"), 0, 2)
+        visual_layout.addWidget(self.canvas_position_combo, 0, 3)
+        visual_layout.addWidget(QLabel("自定义 X"), 1, 0)
+        visual_layout.addWidget(self.canvas_x, 1, 1)
+        visual_layout.addWidget(QLabel("自定义 Y"), 1, 2)
+        visual_layout.addWidget(self.canvas_y, 1, 3)
+        visual_layout.addWidget(QLabel("纯色背景"), 2, 0)
+        visual_layout.addWidget(self.canvas_color_button, 2, 1)
+        visual_layout.addWidget(QLabel("锐化"), 2, 2)
+        visual_layout.addWidget(self.sharpen, 2, 3)
+        visual_layout.addWidget(QLabel("降噪"), 3, 0)
+        visual_layout.addWidget(self.denoise, 3, 1)
+        visual_layout.addWidget(QLabel("亮度"), 3, 2)
+        visual_layout.addWidget(self.brightness, 3, 3)
+        visual_layout.addWidget(QLabel("对比度"), 4, 0)
+        visual_layout.addWidget(self.contrast, 4, 1)
+        visual_layout.addWidget(QLabel("饱和度"), 4, 2)
+        visual_layout.addWidget(self.saturation, 4, 3)
+        visual_layout.addWidget(QLabel("暗部提升"), 5, 0)
+        visual_layout.addWidget(self.shadow_boost, 5, 1)
+        visual_layout.addWidget(QLabel("高光保护"), 5, 2)
+        visual_layout.addWidget(self.highlight_protection, 5, 3)
+        tabs.addTab(visual, "画面增强")
+
+        timeline = QWidget()
+        timeline_layout = QGridLayout(timeline)
+        self.transition_type_combo = QComboBox()
+        for text, value in (
+            ("无转场（硬切）", TransitionType.NONE.value), ("交叉淡化", TransitionType.FADE.value),
+            ("向左推拉", TransitionType.SLIDE_LEFT.value), ("向左擦除", TransitionType.WIPE_LEFT.value),
+            ("缩放转场", TransitionType.ZOOM_IN.value),
+        ):
+            self.transition_type_combo.addItem(text, value)
+        self.transition_seconds = QDoubleSpinBox()
+        self.transition_seconds.setRange(0, 5)
+        self.transition_seconds.setDecimals(2)
+        self.transition_seconds.setSingleStep(0.1)
+        self.transition_seconds.setSuffix(" 秒")
+        self.clip_max_duration = QDoubleSpinBox()
+        self.clip_max_duration.setRange(0, 3600)
+        self.clip_max_duration.setDecimals(2)
+        self.clip_max_duration.setSuffix(" 秒（0=不限）")
+        self.trim_black = QCheckBox("自动检测并裁掉片尾黑帧（会增加一次检测读取）")
+        self.cover_frames = QSpinBox()
+        self.cover_frames.setRange(0, 1800)
+        self.cover_frames.setSuffix(" 帧")
+        self.cover_fadein = QDoubleSpinBox()
+        self.cover_fadein.setRange(0, 10)
+        self.cover_fadein.setDecimals(2)
+        self.cover_fadein.setSuffix(" 秒")
+        self.cover_zoom = QSpinBox()
+        self.cover_zoom.setRange(100, 160)
+        self.cover_zoom.setSuffix("%")
+        self.cover_title = QLineEdit()
+        self.cover_title.setPlaceholderText("可空；显示在封面中央")
+        self.export_cover = QCheckBox("同时导出独立 cover.jpg")
+        timeline_layout.addWidget(QLabel("转场类型"), 0, 0)
+        timeline_layout.addWidget(self.transition_type_combo, 0, 1)
+        timeline_layout.addWidget(QLabel("转场时长"), 0, 2)
+        timeline_layout.addWidget(self.transition_seconds, 0, 3)
+        timeline_layout.addWidget(QLabel("每段最长"), 1, 0)
+        timeline_layout.addWidget(self.clip_max_duration, 1, 1)
+        timeline_layout.addWidget(self.trim_black, 1, 2, 1, 2)
+        timeline_layout.addWidget(QLabel("封面时长"), 2, 0)
+        timeline_layout.addWidget(self.cover_frames, 2, 1)
+        timeline_layout.addWidget(QLabel("封面淡入"), 2, 2)
+        timeline_layout.addWidget(self.cover_fadein, 2, 3)
+        timeline_layout.addWidget(QLabel("封面末帧缩放"), 3, 0)
+        timeline_layout.addWidget(self.cover_zoom, 3, 1)
+        timeline_layout.addWidget(self.export_cover, 3, 2, 1, 2)
+        timeline_layout.addWidget(QLabel("封面标题"), 4, 0)
+        timeline_layout.addWidget(self.cover_title, 4, 1, 1, 3)
+        tabs.addTab(timeline, "转场/裁剪/封面")
+
+        overlay = QWidget()
+        overlay_layout = QGridLayout(overlay)
+        self.logo_motion_combo = QComboBox()
+        for text, value in (
+            ("右上→左下", LogoMotion.TOP_RIGHT_TO_BOTTOM_LEFT.value),
+            ("左上→右下", LogoMotion.TOP_LEFT_TO_BOTTOM_RIGHT.value),
+            ("左下→右上", LogoMotion.BOTTOM_LEFT_TO_TOP_RIGHT.value),
+            ("固定右上", LogoMotion.FIXED_TOP_RIGHT.value), ("固定左上", LogoMotion.FIXED_TOP_LEFT.value),
+            ("固定右下", LogoMotion.FIXED_BOTTOM_RIGHT.value), ("固定左下", LogoMotion.FIXED_BOTTOM_LEFT.value),
+            ("自定义起止位置", LogoMotion.CUSTOM.value),
+        ):
+            self.logo_motion_combo.addItem(text, value)
+        self.logo_start_frame = QSpinBox()
+        self.logo_start_frame.setRange(1, 1_000_000)
+        self.logo_end_frame = QSpinBox()
+        self.logo_end_frame.setRange(0, 1_000_000)
+        self.logo_end_frame.setSpecialValueText("直到结尾")
+        self.logo_fade = QDoubleSpinBox()
+        self.logo_fade.setRange(0, 10)
+        self.logo_fade.setDecimals(2)
+        self.logo_fade.setSuffix(" 秒")
+        self.logo_start_x = QSpinBox(); self.logo_start_x.setRange(0, 100); self.logo_start_x.setSuffix("%")
+        self.logo_start_y = QSpinBox(); self.logo_start_y.setRange(0, 100); self.logo_start_y.setSuffix("%")
+        self.logo_end_x = QSpinBox(); self.logo_end_x.setRange(0, 100); self.logo_end_x.setSuffix("%")
+        self.logo_end_y = QSpinBox(); self.logo_end_y.setRange(0, 100); self.logo_end_y.setSuffix("%")
+        self.subtitle_preset_combo = QComboBox()
+        self.subtitle_preset_combo.addItems(["简洁白字", "黄色黑边", "半透明底板"])
+        subtitle_apply = QPushButton("应用字幕样式")
+        subtitle_apply.clicked.connect(self._apply_subtitle_preset)
+        self.subtitle_shadow = QSpinBox(); self.subtitle_shadow.setRange(0, 12)
+        self.subtitle_background = QSpinBox(); self.subtitle_background.setRange(0, 100); self.subtitle_background.setSuffix("%")
+        self.subtitle_max_chars = QSpinBox(); self.subtitle_max_chars.setRange(4, 60)
+        self.subtitle_horizontal_margin = QSpinBox(); self.subtitle_horizontal_margin.setRange(0, 400)
+        self.highlight_words = QLineEdit(); self.highlight_words.setPlaceholderText("关键词用逗号分隔")
+        self.highlight_color_button = QPushButton(self._highlight_color)
+        self.highlight_color_button.clicked.connect(self._choose_highlight_color)
+        self.subtitle_sample = QLabel("字幕预览：透明泳池更要重视安全冗余")
+        self.subtitle_sample.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.subtitle_sample.setMinimumHeight(70)
+        overlay_layout.addWidget(QLabel("Logo轨迹"), 0, 0); overlay_layout.addWidget(self.logo_motion_combo, 0, 1)
+        overlay_layout.addWidget(QLabel("开始帧"), 0, 2); overlay_layout.addWidget(self.logo_start_frame, 0, 3)
+        overlay_layout.addWidget(QLabel("结束帧"), 1, 0); overlay_layout.addWidget(self.logo_end_frame, 1, 1)
+        overlay_layout.addWidget(QLabel("淡入淡出"), 1, 2); overlay_layout.addWidget(self.logo_fade, 1, 3)
+        overlay_layout.addWidget(QLabel("起点 X/Y"), 2, 0); overlay_layout.addWidget(self.logo_start_x, 2, 1); overlay_layout.addWidget(self.logo_start_y, 2, 2)
+        overlay_layout.addWidget(QLabel("终点 X/Y"), 3, 0); overlay_layout.addWidget(self.logo_end_x, 3, 1); overlay_layout.addWidget(self.logo_end_y, 3, 2)
+        overlay_layout.addWidget(QLabel("字幕预设"), 4, 0); overlay_layout.addWidget(self.subtitle_preset_combo, 4, 1); overlay_layout.addWidget(subtitle_apply, 4, 2)
+        overlay_layout.addWidget(QLabel("字幕阴影"), 5, 0); overlay_layout.addWidget(self.subtitle_shadow, 5, 1)
+        overlay_layout.addWidget(QLabel("底板透明度"), 5, 2); overlay_layout.addWidget(self.subtitle_background, 5, 3)
+        overlay_layout.addWidget(QLabel("每行最多字符"), 6, 0); overlay_layout.addWidget(self.subtitle_max_chars, 6, 1)
+        overlay_layout.addWidget(QLabel("左右安全边距"), 6, 2); overlay_layout.addWidget(self.subtitle_horizontal_margin, 6, 3)
+        overlay_layout.addWidget(QLabel("高亮关键词"), 7, 0); overlay_layout.addWidget(self.highlight_words, 7, 1, 1, 2); overlay_layout.addWidget(self.highlight_color_button, 7, 3)
+        overlay_layout.addWidget(self.subtitle_sample, 8, 0, 1, 4)
+        tabs.addTab(overlay, "Logo/字幕")
+
+        audio = QWidget()
+        audio_layout = QGridLayout(audio)
+        self.normalize_audio = QCheckBox("响度标准化，减少忽大忽小")
+        self.loudness_target = QDoubleSpinBox()
+        self.loudness_target.setRange(-24, -8)
+        self.loudness_target.setDecimals(1)
+        self.loudness_target.setSuffix(" LUFS")
+        self.duck_music = QCheckBox("有原声时自动压低 BGM")
+        self.music_fadein = QDoubleSpinBox(); self.music_fadein.setRange(0, 10); self.music_fadein.setDecimals(2); self.music_fadein.setSuffix(" 秒")
+        self.music_fadeout = QDoubleSpinBox(); self.music_fadeout.setRange(0, 10); self.music_fadeout.setDecimals(2); self.music_fadeout.setSuffix(" 秒")
+        audio_layout.addWidget(self.normalize_audio, 0, 0, 1, 2)
+        audio_layout.addWidget(QLabel("目标响度"), 0, 2); audio_layout.addWidget(self.loudness_target, 0, 3)
+        audio_layout.addWidget(self.duck_music, 1, 0, 1, 2)
+        audio_layout.addWidget(QLabel("配乐淡入"), 1, 2); audio_layout.addWidget(self.music_fadein, 1, 3)
+        audio_layout.addWidget(QLabel("配乐淡出"), 2, 2); audio_layout.addWidget(self.music_fadeout, 2, 3)
+        tabs.addTab(audio, "音频")
+
+        self._apply_settings_to_controls(self._profile_settings)
+        for control in (
+            self.transition_seconds, self.cover_frames, self.clip_max_duration,
+            self.canvas_x, self.canvas_y, self.sharpen, self.denoise,
+        ):
+            control.valueChanged.connect(self._update_estimate)
+        for control in (
+            self.subtitle_shadow, self.subtitle_background, self.subtitle_max_chars,
+            self.subtitle_horizontal_margin,
+        ):
+            control.valueChanged.connect(self._update_subtitle_preview)
+        self.highlight_words.textChanged.connect(self._update_subtitle_preview)
+        self._update_subtitle_preview()
+        return group
+
+    def _build_preview_group(self) -> QGroupBox:
+        group = QGroupBox("画面位置与效果预览（手动模式）")
+        layout = QHBoxLayout(group)
+        self.preview_label = PositionPreviewLabel()
+        self.preview_label.position_changed.connect(self._on_preview_position_changed)
+        side = QVBoxLayout()
+        preview_button = QPushButton("生成当前选中视频预览")
+        preview_button.clicked.connect(self.generate_preview)
+        self.preview_status = QLabel("预览只生成一张静帧，不会编码完整视频。")
+        self.preview_status.setWordWrap(True)
+        side.addWidget(preview_button)
+        side.addWidget(self.preview_status)
+        side.addStretch(1)
+        layout.addWidget(self.preview_label)
+        layout.addLayout(side, 1)
         return group
 
     def _build_output_group(self) -> QGroupBox:
@@ -368,6 +714,7 @@ class MainWindow(QMainWindow):
         self.output_name_label = QLabel("文件名")
         self.filename_edit = QLineEdit(self._manual_filename)
         self.estimate_label = QLabel("预计总时长：请添加视频（最终以 FFprobe 实测为准）")
+        self.estimate_label.setWordWrap(True)
         layout.addWidget(QLabel("输出目录"), 0, 0)
         layout.addWidget(self.output_dir_edit, 0, 1)
         layout.addWidget(browse, 0, 2)
@@ -384,17 +731,21 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton("取消任务")
         self.open_button = QPushButton("打开输出文件夹")
         self.download_log_button = QPushButton("下载日志…")
+        self.retry_button = QPushButton("仅重试失败任务")
         self.cancel_button.setEnabled(False)
         self.open_button.setEnabled(False)
         self.download_log_button.setEnabled(False)
+        self.retry_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_render)
         self.cancel_button.clicked.connect(self.cancel_render)
         self.open_button.clicked.connect(self.open_output_folder)
         self.download_log_button.clicked.connect(self.download_logs)
+        self.retry_button.clicked.connect(self.retry_failed_tasks)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.download_log_button)
+        buttons.addWidget(self.retry_button)
         buttons.addStretch(1)
         self.stage_label = QLabel("就绪")
         self.progress_bar = QProgressBar()
@@ -416,6 +767,7 @@ class MainWindow(QMainWindow):
         mode = str(self.mode_combo.currentData())
         if self._active_mode == "batch":
             self._batch_prefix = self.filename_edit.text()
+            self._batch_template = self.output_template_edit.text()
         elif self._active_mode == "manual":
             self._manual_filename = self.filename_edit.text()
         batch = mode == "batch"
@@ -424,11 +776,15 @@ class MainWindow(QMainWindow):
         for widget in self.manual_asset_widgets:
             widget.setVisible(not batch)
         self.optional_group.setTitle("批量任务统一 Logo" if batch else "封面、Logo、字幕与配乐")
+        if hasattr(self, "preview_group"):
+            self.preview_group.setVisible(not batch)
         self.output_name_label.setText("文件名前缀" if batch else "文件名")
         self.filename_edit.setText(self._batch_prefix if batch else self._manual_filename)
         self.start_button.setText("开始批量剪辑" if batch else "开始剪辑")
         if batch:
-            self.estimate_label.setText("输出名将按子文件夹顺序生成为：前缀1.mp4、前缀2.mp4……")
+            self.estimate_label.setText(
+                "批量输出使用命名模板；可用 {prefix}、{folder}、{index}、{date}。"
+            )
         else:
             self._update_estimate()
         self._active_mode = mode
@@ -438,6 +794,8 @@ class MainWindow(QMainWindow):
         if path:
             self.batch_root_edit.setText(path)
             self.preview_batch()
+            if self.watch_checkbox.isChecked():
+                self._on_watch_toggled(True)
 
     def preview_batch(self) -> None:
         root_text = self.batch_root_edit.text().strip()
@@ -446,8 +804,24 @@ class MainWindow(QMainWindow):
             return
         root = Path(root_text).expanduser()
         output = Path(self.output_dir_edit.text()).expanduser() if self.output_dir_edit.text() else None
-        scan = scan_batch_root(root, excluded_dir=output)
+        scan = scan_batch_root(
+            root,
+            excluded_dir=output,
+            sort_mode=VideoSortMode(self.sort_mode_combo.currentData()),
+            first_pattern=self.first_pattern_edit.text().strip(),
+            last_pattern=self.last_pattern_edit.text().strip(),
+        )
         message = f"可处理 {len(scan.sources)} 个子文件夹；不合格 {len(scan.issues)} 个。"
+        if scan.sources:
+            first = scan.sources[0]
+            try:
+                example = batch_output_filename(
+                    self.filename_edit.text(), 1, folder_name=first.source_dir.name,
+                    template=self.output_template_edit.text(),
+                )
+                message += f" 示例输出：{example}。"
+            except ValueError as exc:
+                message += f" 命名模板错误：{exc}。"
         if scan.issues:
             details = "\n".join(f"- {issue.source_dir.name}：{issue.message}" for issue in scan.issues[:5])
             if len(scan.issues) > 5:
@@ -571,33 +945,375 @@ class MainWindow(QMainWindow):
         else:
             self._outline_color = value
             self.outline_color_button.setText(f"描边 {value}")
+        self._update_subtitle_preview()
+
+    def _choose_canvas_color(self) -> None:
+        color = QColorDialog.getColor(QColor(self.canvas_color_button.text()), self, "选择画布背景色")
+        if color.isValid():
+            self.canvas_color_button.setText(color.name().upper())
+
+    def _choose_highlight_color(self) -> None:
+        color = QColorDialog.getColor(QColor(self._highlight_color), self, "选择关键词颜色")
+        if color.isValid():
+            self._highlight_color = color.name().upper()
+            self.highlight_color_button.setText(self._highlight_color)
+            self._update_subtitle_preview()
+
+    def _refresh_preset_combo(self) -> None:
+        current = self.preset_combo.currentText() if hasattr(self, "preset_combo") else ""
+        self.preset_combo.clear()
+        for name in BUILTIN_PRESETS:
+            self.preset_combo.addItem(name, ("builtin", name))
+        for name in sorted(self._custom_presets, key=str.casefold):
+            self.preset_combo.addItem(f"自定义：{name}", ("custom", name))
+        if current:
+            index = self.preset_combo.findText(current)
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
+
+    def _apply_selected_preset(self) -> None:
+        data = self.preset_combo.currentData()
+        if not data:
+            return
+        kind, name = data
+        mapping = BUILTIN_PRESETS[name] if kind == "builtin" else self._custom_presets[name]
+        settings = render_settings_from_mapping(mapping, RenderSettings())
+        self._apply_settings_to_controls(settings)
+        self._append_log(f"已应用参数预设：{name}")
+
+    def _save_custom_preset(self) -> None:
+        name, accepted = QInputDialog.getText(self, "保存参数预设", "预设名称")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        self._custom_presets[name[:80]] = render_settings_to_mapping(self._render_settings())
+        try:
+            self._preset_store.save_custom(self._custom_presets)
+        except OSError as exc:
+            QMessageBox.critical(self, "预设保存失败", str(exc))
+            return
+        self._refresh_preset_combo()
+        self.preset_combo.setCurrentIndex(self.preset_combo.count() - 1)
+
+    def _delete_custom_preset(self) -> None:
+        data = self.preset_combo.currentData()
+        if not data or data[0] != "custom":
+            QMessageBox.information(self, "不能删除", "内置预设不能删除。")
+            return
+        self._custom_presets.pop(data[1], None)
+        self._preset_store.save_custom(self._custom_presets)
+        self._refresh_preset_combo()
+
+    def _apply_subtitle_preset(self) -> None:
+        name = self.subtitle_preset_combo.currentText()
+        if name == "黄色黑边":
+            self._primary_color, self._outline_color = "#FFD400", "#000000"
+            self.outline_width.setValue(6)
+            self.subtitle_background.setValue(0)
+        elif name == "半透明底板":
+            self._primary_color, self._outline_color = "#FFFFFF", "#000000"
+            self.outline_width.setValue(2)
+            self.subtitle_background.setValue(55)
+        else:
+            self._primary_color, self._outline_color = "#FFFFFF", "#000000"
+            self.outline_width.setValue(5)
+            self.subtitle_background.setValue(0)
+        self.primary_color_button.setText(f"文字 {self._primary_color}")
+        self.outline_color_button.setText(f"描边 {self._outline_color}")
+        self._update_subtitle_preview()
+
+    def _update_subtitle_preview(self, *_args: object) -> None:
+        if not hasattr(self, "subtitle_sample"):
+            return
+        background = max(0, min(100, self.subtitle_background.value()))
+        alpha = round(background * 2.55)
+        style = (
+            f"font-family: '{self.font_combo.currentFont().family()}';"
+            f"font-size: {max(14, self.font_size.value() // 3)}px;"
+            f"color: {self._primary_color};"
+            f"background-color: rgba(0,0,0,{alpha});"
+            f"padding: 8px; border-radius: 4px;"
+        )
+        self.subtitle_sample.setStyleSheet(style)
+        words = [part.strip() for part in self.highlight_words.text().replace("，", ",").split(",") if part.strip()]
+        sample = "字幕预览：透明泳池更要重视安全冗余"
+        if words:
+            sample += f"（关键词：{'、'.join(words[:3])}，成片中显示为 {self._highlight_color}）"
+        self.subtitle_sample.setText(sample)
+
+    def _apply_settings_to_controls(self, settings: RenderSettings) -> None:
+        if not hasattr(self, "canvas_mode_combo"):
+            return
+        self._select_combo(self.interpolation_combo, settings.interpolation_mode.value)
+        self._select_combo(self.source_audio_combo, settings.source_audio_mode.value)
+        self._select_combo(self.music_policy_combo, settings.music_short_policy.value)
+        self._select_combo(self.encoder_combo, settings.video_encoder.value)
+        self._select_combo(self.quality_combo, settings.output_quality.value)
+        self.volume_slider.setValue(round(settings.music_volume * 100))
+        self.mirror_second_clip.setChecked(settings.mirror_second_clip)
+        self.subtitle_enabled.setChecked(settings.subtitle_enabled)
+        self.font_combo.setCurrentFont(QFont(settings.subtitle_style.font_name))
+        self.font_size.setValue(settings.subtitle_style.font_size)
+        self.outline_width.setValue(settings.subtitle_style.outline_width)
+        self.subtitle_margin.setValue(settings.subtitle_style.margin_bottom)
+        self._primary_color = settings.subtitle_style.primary_color
+        self._outline_color = settings.subtitle_style.outline_color
+        self._highlight_color = settings.subtitle_style.highlight_color
+        self.primary_color_button.setText(f"文字 {self._primary_color}")
+        self.outline_color_button.setText(f"描边 {self._outline_color}")
+        self._select_combo(self.canvas_mode_combo, settings.canvas_mode.value)
+        self._select_combo(self.canvas_position_combo, settings.canvas_position.value)
+        self.canvas_x.setValue(settings.canvas_x_percent)
+        self.canvas_y.setValue(settings.canvas_y_percent)
+        self.canvas_color_button.setText(settings.canvas_color)
+        self.sharpen.setValue(settings.sharpen_amount)
+        self.denoise.setValue(settings.denoise_strength)
+        self.brightness.setValue(round(settings.brightness * 100))
+        self.contrast.setValue(round(settings.contrast * 100))
+        self.saturation.setValue(round(settings.saturation * 100))
+        self.shadow_boost.setValue(round(settings.shadow_boost * 100))
+        self.highlight_protection.setValue(round(settings.highlight_protection * 100))
+        self._select_combo(self.transition_type_combo, settings.transition_type.value)
+        self.transition_seconds.setValue(settings.transition_frames / settings.fps)
+        self.clip_max_duration.setValue(settings.clip_max_duration_seconds)
+        self.trim_black.setChecked(settings.trim_trailing_black)
+        self.cover_frames.setValue(settings.cover_frames)
+        self.cover_fadein.setValue(settings.cover_fadein_seconds)
+        self.cover_zoom.setValue(settings.cover_zoom_percent)
+        self.cover_title.setText(settings.cover_title)
+        self.export_cover.setChecked(settings.export_cover_image)
+        self._select_combo(self.logo_motion_combo, settings.logo_motion.value)
+        self.logo_start_frame.setValue(settings.logo_start_frame)
+        self.logo_end_frame.setValue(settings.logo_end_frame)
+        self.logo_fade.setValue(settings.logo_fade_seconds)
+        self.logo_start_x.setValue(settings.logo_start_x_percent)
+        self.logo_start_y.setValue(settings.logo_start_y_percent)
+        self.logo_end_x.setValue(settings.logo_end_x_percent)
+        self.logo_end_y.setValue(settings.logo_end_y_percent)
+        self.subtitle_shadow.setValue(settings.subtitle_style.shadow_depth)
+        self.subtitle_background.setValue(settings.subtitle_style.background_opacity_percent)
+        self.subtitle_max_chars.setValue(settings.subtitle_style.max_chars_per_line)
+        self.subtitle_horizontal_margin.setValue(settings.subtitle_style.margin_horizontal)
+        self.highlight_words.setText("，".join(settings.subtitle_style.highlight_words))
+        self.highlight_color_button.setText(self._highlight_color)
+        self.normalize_audio.setChecked(settings.normalize_audio)
+        self.loudness_target.setValue(settings.loudness_target_lufs)
+        self.duck_music.setChecked(settings.duck_music_under_source)
+        self.music_fadein.setValue(settings.music_fadein_seconds)
+        self.music_fadeout.setValue(settings.music_fadeout_seconds)
+        self._update_subtitle_preview()
+        self._update_estimate()
+
+    def _load_selected_trim(self) -> None:
+        item = self.video_list.current_video()
+        if item is None:
+            return
+        self.trim_start.setValue(item.trim_start_seconds)
+        self.trim_end.setValue(item.trim_end_seconds)
+
+    def _apply_selected_trim(self) -> None:
+        if self.trim_end.value() > 0 and self.trim_end.value() <= self.trim_start.value():
+            QMessageBox.warning(self, "裁剪时间无效", "结束时间必须晚于开始时间，或设为0表示素材结尾。")
+            return
+        self.video_list.set_selected_trim(self.trim_start.value(), self.trim_end.value())
+
+    def _reset_selected_trim(self) -> None:
+        self.trim_start.setValue(0)
+        self.trim_end.setValue(0)
+        self.video_list.set_selected_trim(0, 0)
+
+    def generate_preview(self) -> None:
+        if not self._capabilities:
+            QMessageBox.warning(self, "无法预览", "请先完成 FFmpeg 检测。")
+            return
+        item = self.video_list.current_video()
+        if item is None:
+            items = self.video_list.video_items()
+            item = items[0] if items else None
+        if item is None or item.probe is None:
+            QMessageBox.information(self, "无法预览", "请先添加并选择一个视频。")
+            return
+        if self._preview_process and self._preview_process.state() != QProcess.ProcessState.NotRunning:
+            self._preview_process.kill()
+        settings = replace(self._render_settings(), interpolation_mode=InterpolationMode.FAST)
+        try:
+            start, end = effective_clip_range(item, item.probe, settings)
+        except ValueError as exc:
+            QMessageBox.warning(self, "无法预览", str(exc))
+            return
+        graph = build_normalization_filter(
+            item.probe,
+            settings,
+            clip_start_seconds=start,
+            clip_end_seconds=end,
+        )
+        graph += f",{build_enhancement_filter(settings)}"
+        self._preview_path.parent.mkdir(parents=True, exist_ok=True)
+        self._preview_path.unlink(missing_ok=True)
+        process = QProcess(self)
+        process.setProgram(str(self._capabilities.ffmpeg_path))
+        process.setArguments([
+            "-hide_banner", "-y", "-i", str(item.source_path), "-vf", graph,
+            "-frames:v", "1", "-pix_fmt", "yuvj420p", "-q:v", "2", "-update", "1", "-loglevel", "error",
+            str(self._preview_path),
+        ])
+        process.finished.connect(self._preview_finished)
+        process.errorOccurred.connect(lambda _error: self.preview_status.setText("预览进程启动失败。"))
+        self._preview_process = process
+        self.preview_status.setText("正在生成预览…")
+        process.start()
+
+    def _preview_finished(self, exit_code: int, _status: object) -> None:
+        if exit_code == 0 and self._preview_path.is_file():
+            pixmap = QPixmap(str(self._preview_path))
+            self.preview_label.setPixmap(
+                pixmap.scaled(
+                    self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            self.preview_status.setText("预览已更新；拖动画面可设置自定义位置，再次点击即可刷新。")
+        else:
+            detail = ""
+            if self._preview_process:
+                detail = bytes(self._preview_process.readAllStandardError()).decode("utf-8", "replace")[-500:]
+            self.preview_status.setText(f"预览生成失败：{detail or '请查看 FFmpeg 配置'}")
+
+    def _on_preview_position_changed(self, x: int, y: int) -> None:
+        self._select_combo(self.canvas_position_combo, CanvasPosition.CUSTOM.value)
+        self.canvas_x.setValue(x)
+        self.canvas_y.setValue(y)
+        self.preview_status.setText(f"自定义位置：X={x}%、Y={y}%；点击“生成预览”刷新。")
+
+    def _on_watch_toggled(self, checked: bool) -> None:
+        if not hasattr(self, "_watch_timer"):
+            return
+        self._watch_timer.stop()
+        if not checked:
+            return
+        root_text = self.batch_root_edit.text().strip()
+        if not root_text:
+            return
+        root = Path(root_text).expanduser()
+        output = Path(self.output_dir_edit.text()).expanduser() if self.output_dir_edit.text() else None
+        if root.is_dir():
+            try:
+                self._watch_tracker.arm(root, excluded=output)
+            except OSError as exc:
+                self._append_log(f"监控文件夹初始化失败：{exc}")
+        self._watch_timer.start(self.watch_interval.value() * 1000)
+
+    def _restart_watch_timer(self, *_args: object) -> None:
+        if hasattr(self, "_watch_timer") and self.watch_checkbox.isChecked():
+            self._watch_timer.start(self.watch_interval.value() * 1000)
+
+    def _poll_watch_folder(self) -> None:
+        if self._thread is not None or not self.watch_checkbox.isChecked():
+            return
+        root_text = self.batch_root_edit.text().strip()
+        if not root_text:
+            return
+        root = Path(root_text).expanduser()
+        output = Path(self.output_dir_edit.text()).expanduser() if self.output_dir_edit.text() else None
+        try:
+            ready = self._watch_tracker.poll(root, excluded=output)
+        except OSError as exc:
+            self._append_log(f"监控文件夹读取失败：{exc}")
+            return
+        if ready:
+            self._append_log("监控发现稳定的新素材目录：" + "、".join(path.name for path in ready))
+            started = self._start_batch_render(only_dirs=set(ready), watch_trigger=True)
+            if started:
+                processed = tuple(task.source_dir for task in self._current_batch_tasks)
+                self._watch_tracker.mark_processed(processed)
 
     def _update_estimate(self) -> None:
+        if hasattr(self, "mode_combo") and self.mode_combo.currentData() == "batch":
+            return
         items = self.video_list.video_items()
         if not items or any(item.probe is None for item in items):
             self.estimate_label.setText("预计总时长：请添加视频（最终以 FFprobe 实测为准）")
             return
-        estimates = [max(1, round(item.probe.duration_seconds * 60)) for item in items if item.probe]
         try:
-            plan = calculate_timeline(estimates, bool(self.cover_edit.text()))
+            settings = self._render_settings() if hasattr(self, "canvas_mode_combo") else RenderSettings()
+            estimate = estimate_export(
+                items,
+                settings,
+                has_cover=bool(self.cover_edit.text()) and settings.cover_frames > 0,
+                output_dir=Path(self.output_dir_edit.text()).expanduser() if self.output_dir_edit.text() else None,
+                has_audio=bool(self.music_edit.text()) or settings.source_audio_mode == SourceAudioMode.MIX,
+            )
+            size_label = "目标" if estimate.size_is_targeted else "内容相关估计"
+            free = (
+                f"；可用磁盘 {estimate.available_free_bytes / 1024**3:.2f} GiB"
+                if estimate.available_free_bytes is not None else ""
+            )
+            warnings = ""
+            if estimate.warnings:
+                warnings = "\n提示：" + "；".join(estimate.warnings[:3])
             self.estimate_label.setText(
-                f"预计总时长：约 {plan.duration_seconds:.3f} 秒 / {plan.total_frames} 帧；"
-                "最终由单次编码时间线与 FFprobe 精确核验"
+                f"预计：{estimate.duration_seconds:.3f} 秒 / {estimate.total_frames} 帧；"
+                f"文件约 {estimate.estimated_bytes / 1_000_000:.1f} MB（{size_label}）；"
+                f"建议预留 {estimate.required_free_bytes / 1024**2:.0f} MiB{free}。"
+                "最终以 FFprobe 实测为准。" + warnings
             )
         except ValueError as exc:
             self.estimate_label.setText(f"预计时间线无效：{exc}")
 
     def _render_settings(self) -> RenderSettings:
+        transition_type = TransitionType(self.transition_type_combo.currentData())
+        transition_frames = 0 if transition_type == TransitionType.NONE else max(
+            1, round(self.transition_seconds.value() * 60)
+        )
+        words = tuple(
+            part.strip()
+            for part in self.highlight_words.text().replace("，", ",").split(",")
+            if part.strip()
+        )
         return RenderSettings(
+            transition_frames=transition_frames,
+            transition_type=transition_type,
+            cover_frames=self.cover_frames.value(),
+            cover_fadein_seconds=self.cover_fadein.value(),
+            cover_zoom_percent=self.cover_zoom.value(),
+            cover_title=self.cover_title.text().strip(),
+            export_cover_image=self.export_cover.isChecked(),
             interpolation_mode=InterpolationMode(self.interpolation_combo.currentData()),
             source_audio_mode=SourceAudioMode(self.source_audio_combo.currentData()),
             music_short_policy=MusicShortPolicy(self.music_policy_combo.currentData()),
             music_volume=self.volume_slider.value() / 100,
+            music_fadein_seconds=self.music_fadein.value(),
+            music_fadeout_seconds=self.music_fadeout.value(),
+            normalize_audio=self.normalize_audio.isChecked(),
+            loudness_target_lufs=self.loudness_target.value(),
+            duck_music_under_source=self.duck_music.isChecked(),
             video_encoder=VideoEncoder(self.encoder_combo.currentData()),
             output_quality=OutputQuality(self.quality_combo.currentData()),
             mirror_second_clip=self.mirror_second_clip.isChecked(),
+            clip_max_duration_seconds=self.clip_max_duration.value(),
+            trim_trailing_black=self.trim_black.isChecked(),
+            canvas_mode=CanvasMode(self.canvas_mode_combo.currentData()),
+            canvas_position=CanvasPosition(self.canvas_position_combo.currentData()),
+            canvas_x_percent=self.canvas_x.value(),
+            canvas_y_percent=self.canvas_y.value(),
+            canvas_color=self.canvas_color_button.text(),
+            sharpen_amount=self.sharpen.value(),
+            denoise_strength=self.denoise.value(),
+            brightness=self.brightness.value() / 100,
+            contrast=self.contrast.value() / 100,
+            saturation=self.saturation.value() / 100,
+            shadow_boost=self.shadow_boost.value() / 100,
+            highlight_protection=self.highlight_protection.value() / 100,
             logo_scale_percent=self.logo_scale.value(),
             logo_opacity_percent=self.logo_opacity.value(),
+            logo_start_frame=self.logo_start_frame.value(),
+            logo_end_frame=self.logo_end_frame.value(),
+            logo_motion=LogoMotion(self.logo_motion_combo.currentData()),
+            logo_start_x_percent=self.logo_start_x.value(),
+            logo_start_y_percent=self.logo_start_y.value(),
+            logo_end_x_percent=self.logo_end_x.value(),
+            logo_end_y_percent=self.logo_end_y.value(),
+            logo_fade_seconds=self.logo_fade.value(),
             subtitle_enabled=self.subtitle_enabled.isChecked(),
             subtitle_style=SubtitleStyle(
                 font_name=self.font_combo.currentFont().family(),
@@ -606,6 +1322,12 @@ class MainWindow(QMainWindow):
                 outline_color=self._outline_color,
                 outline_width=self.outline_width.value(),
                 margin_bottom=self.subtitle_margin.value(),
+                margin_horizontal=self.subtitle_horizontal_margin.value(),
+                shadow_depth=self.subtitle_shadow.value(),
+                background_opacity_percent=self.subtitle_background.value(),
+                max_chars_per_line=self.subtitle_max_chars.value(),
+                highlight_words=words,
+                highlight_color=self._highlight_color,
             ),
         )
 
@@ -646,6 +1368,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "任务配置有误", "\n".join(errors))
             return
         self._save_current_settings(job.settings)
+        self._last_manual_job = job
+        self._last_manual_failed = False
+        self._last_retry_tasks = ()
+        self.retry_button.setEnabled(False)
         self.progress_bar.setValue(0)
         self.stage_label.setText("准备开始")
         self.log_view.clear()
@@ -670,50 +1396,100 @@ class MainWindow(QMainWindow):
         self._worker = worker
         thread.start()
 
-    def _start_batch_render(self) -> None:
+    def _start_batch_render(
+        self,
+        *,
+        only_dirs: set[Path] | None = None,
+        watch_trigger: bool = False,
+    ) -> bool:
         assert self._capabilities is not None
         root_text = self.batch_root_edit.text().strip()
         output_text = self.output_dir_edit.text().strip()
         logo_text = self.logo_edit.text().strip()
         if not root_text:
-            QMessageBox.warning(self, "任务配置有误", "请选择批量素材总目录。")
-            return
+            if not watch_trigger:
+                QMessageBox.warning(self, "任务配置有误", "请选择批量素材总目录。")
+            return False
         if not output_text:
-            QMessageBox.warning(self, "任务配置有误", "请选择输出目录。")
-            return
+            if not watch_trigger:
+                QMessageBox.warning(self, "任务配置有误", "请选择输出目录。")
+            return False
         if not logo_text or not Path(logo_text).is_file():
-            QMessageBox.warning(self, "任务配置有误", "请选择本批任务统一使用的 Logo 图片。")
-            return
+            if not watch_trigger:
+                QMessageBox.warning(self, "任务配置有误", "请选择本批任务统一使用的 Logo 图片。")
+            return False
 
         root = Path(root_text).expanduser()
         output_dir = Path(output_text).expanduser()
         prefix = self.filename_edit.text().strip()
         if not prefix:
-            QMessageBox.warning(self, "任务配置有误", "请输入输出文件名前缀。")
-            return
-        scan = scan_batch_root(root, excluded_dir=output_dir)
-        self.preview_batch()
-        initial_failures = [BatchFailure(issue.source_dir.name, issue.message) for issue in scan.issues]
+            if not watch_trigger:
+                QMessageBox.warning(self, "任务配置有误", "请输入输出文件名前缀。")
+            return False
+        scan = scan_batch_root(
+            root,
+            excluded_dir=output_dir,
+            sort_mode=VideoSortMode(self.sort_mode_combo.currentData()),
+            first_pattern=self.first_pattern_edit.text().strip(),
+            last_pattern=self.last_pattern_edit.text().strip(),
+        )
+        if not watch_trigger:
+            self.preview_batch()
+        resolved_only = {path.resolve(strict=False) for path in only_dirs} if only_dirs else None
+        initial_failures = [
+            BatchFailure(issue.source_dir.name, issue.message)
+            for issue in scan.issues
+            if resolved_only is None or issue.source_dir.resolve(strict=False) in resolved_only
+        ]
         settings = self._render_settings()
         batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         records_root = config_dir() / "batch_records" / batch_id
         tasks: list[BatchRenderTask] = []
+        planned_targets: set[Path] = set()
         for index, source in enumerate(scan.sources, 1):
-            filename = batch_output_filename(prefix, index)
+            if resolved_only is not None and source.source_dir.resolve(strict=False) not in resolved_only:
+                continue
+            folder_template = str(
+                source.folder_config.get("output_template", self.output_template_edit.text())
+                or self.output_template_edit.text()
+            )
+            explicit_name = str(source.folder_config.get("output_name", "") or "").strip()
+            try:
+                filename = (
+                    sanitize_output_filename(explicit_name)
+                    if explicit_name
+                    else batch_output_filename(
+                        prefix,
+                        index,
+                        folder_name=source.source_dir.name,
+                        template=folder_template,
+                    )
+                )
+            except ValueError as exc:
+                initial_failures.append(BatchFailure(source.source_dir.name, str(exc)))
+                continue
             target = output_dir / filename
             if target.exists():
                 initial_failures.append(
                     BatchFailure(source.source_dir.name, f"输出文件已存在，为防止覆盖已跳过：{target}")
                 )
                 continue
+            normalized_target = target.resolve(strict=False)
+            if normalized_target in planned_targets:
+                initial_failures.append(
+                    BatchFailure(source.source_dir.name, f"批量任务中存在重复输出文件名，已跳过：{target}")
+                )
+                continue
+            planned_targets.add(normalized_target)
+            source_settings = settings_for_batch_source(settings, source)
             job = RenderJob(
-                video_items=tuple(VideoItem(path, path.name) for path in source.video_paths),
+                video_items=video_items_for_batch_source(source),
                 cover_path=source.cover_path,
                 subtitle_path=source.subtitle_path,
                 music_path=source.music_path,
                 output_dir=output_dir,
                 output_filename=filename,
-                settings=settings,
+                settings=source_settings,
                 logo_path=Path(logo_text),
                 auxiliary_dir=records_root / f"{index:04d}",
             )
@@ -739,17 +1515,21 @@ class MainWindow(QMainWindow):
             self._append_log("批量扫描后没有可执行任务：")
             for failure in initial_failures:
                 self._append_log(f"跳过：{failure.source_name}：{failure.message}")
-            QMessageBox.warning(self, "没有可执行任务", details)
-            return
+            if not watch_trigger:
+                QMessageBox.warning(self, "没有可执行任务", details)
+            return False
 
         self.filename_edit.setText(prefix)
         self._batch_prefix = prefix
+        self._batch_template = self.output_template_edit.text().strip()
         self._save_current_settings(settings)
         self.progress_bar.setValue(0)
         self.stage_label.setText("准备批量处理")
         self.log_view.clear()
         self.download_log_button.setEnabled(False)
         self._last_result = None
+        self._last_retry_tasks = ()
+        self.retry_button.setEnabled(False)
         self._last_output_dir = output_dir
         self._set_running(True)
         self._append_log(
@@ -777,7 +1557,9 @@ class MainWindow(QMainWindow):
         thread.finished.connect(self._thread_finished)
         self._thread = thread
         self._worker = worker
+        self._current_batch_tasks = tuple(tasks)
         thread.start()
+        return True
 
     def _save_current_settings(self, settings: RenderSettings) -> None:
         self._settings = replace(
@@ -785,6 +1567,12 @@ class MainWindow(QMainWindow):
             output_dir=str(Path(self.output_dir_edit.text()).expanduser()),
             batch_input_dir=self.batch_root_edit.text().strip(),
             output_prefix=self._batch_prefix,
+            output_template=self.output_template_edit.text().strip() or "{prefix}{index}.mp4",
+            video_sort_mode=str(self.sort_mode_combo.currentData()),
+            first_video_pattern=self.first_pattern_edit.text().strip(),
+            last_video_pattern=self.last_pattern_edit.text().strip(),
+            watch_enabled=self.watch_checkbox.isChecked(),
+            watch_interval_seconds=self.watch_interval.value(),
             interpolation_mode=settings.interpolation_mode.value,
             source_audio_mode=settings.source_audio_mode.value,
             music_short_policy=settings.music_short_policy.value,
@@ -797,6 +1585,7 @@ class MainWindow(QMainWindow):
             logo_opacity_percent=settings.logo_opacity_percent,
             ffmpeg_path=self.ffmpeg_edit.text(),
             ffprobe_path=self.ffprobe_edit.text(),
+            render_profile=render_settings_to_mapping(settings),
         )
         try:
             self._store.save(self._settings)
@@ -819,6 +1608,8 @@ class MainWindow(QMainWindow):
         self.stage_label.setText(f"完成：{result.output_path.name}")
         self.progress_bar.setValue(100)
         self.open_button.setEnabled(True)
+        self._last_manual_failed = False
+        self.retry_button.setEnabled(False)
         QMessageBox.information(self, "剪辑完成", f"成片已核验并保存：\n{result.output_path}")
 
     def _on_batch_completed(self, summary: BatchRenderSummary) -> None:
@@ -827,6 +1618,8 @@ class MainWindow(QMainWindow):
             self.open_button.setEnabled(True)
         success_count = len(summary.successes)
         failure_count = len(summary.failures)
+        self._last_retry_tasks = summary.retry_tasks
+        self.retry_button.setEnabled(bool(summary.retry_tasks))
         self.stage_label.setText(f"批量完成：成功 {success_count}，失败/跳过 {failure_count}")
         self.progress_bar.setValue(100)
         self._append_log(f"===== 批量完成：成功 {success_count}，失败/跳过 {failure_count} =====")
@@ -841,7 +1634,62 @@ class MainWindow(QMainWindow):
     def _on_failure(self, message: str) -> None:
         self.stage_label.setText("失败")
         self._append_log(message)
+        if self._active_mode == "manual" and self._last_manual_job is not None:
+            self._last_manual_failed = True
+            self.retry_button.setEnabled(True)
         QMessageBox.critical(self, "剪辑失败", message)
+
+    def retry_failed_tasks(self) -> None:
+        if self._thread is not None or not self._capabilities:
+            return
+        if self._last_retry_tasks:
+            tasks = self._last_retry_tasks
+            self._last_retry_tasks = ()
+            self.retry_button.setEnabled(False)
+            self.progress_bar.setValue(0)
+            self.stage_label.setText("准备重试失败任务")
+            self._set_running(True)
+            self._append_log(f"===== 用户主动重试 {len(tasks)} 个失败任务 =====")
+            thread = QThread(self)
+            worker = BatchRenderWorker(tasks, (), self._capabilities)
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.progress.connect(self._on_progress)
+            worker.log.connect(self._append_log)
+            worker.completed.connect(self._on_batch_completed)
+            worker.failed.connect(self._on_failure)
+            worker.cancelled.connect(self._on_cancelled)
+            worker.done.connect(thread.quit)
+            worker.done.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+            thread.finished.connect(self._thread_finished)
+            self._thread, self._worker = thread, worker
+            self._current_batch_tasks = tasks
+            thread.start()
+            return
+        if self._last_manual_failed and self._last_manual_job is not None:
+            job = self._last_manual_job
+            self._last_manual_failed = False
+            self.retry_button.setEnabled(False)
+            self.progress_bar.setValue(0)
+            self.stage_label.setText("准备重试")
+            self._set_running(True)
+            self._append_log("===== 用户主动重试手动任务 =====")
+            thread = QThread(self)
+            worker = RenderWorker(job, self._capabilities)
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run)
+            worker.progress.connect(self._on_progress)
+            worker.log.connect(self._append_log)
+            worker.succeeded.connect(self._on_success)
+            worker.failed.connect(self._on_failure)
+            worker.cancelled.connect(self._on_cancelled)
+            worker.done.connect(thread.quit)
+            worker.done.connect(worker.deleteLater)
+            thread.finished.connect(thread.deleteLater)
+            thread.finished.connect(self._thread_finished)
+            self._thread, self._worker = thread, worker
+            thread.start()
 
     def _on_cancelled(self) -> None:
         self.stage_label.setText("已取消，临时文件已清理")
@@ -899,6 +1747,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._thread is None:
+            if hasattr(self, "_watch_timer"):
+                self._watch_timer.stop()
+            if self._preview_process and self._preview_process.state() != QProcess.ProcessState.NotRunning:
+                self._preview_process.kill()
             event.accept()
             return
         answer = QMessageBox.question(

@@ -1,0 +1,40 @@
+{
+  "video_order": [
+    "片头.mp4",
+    "主体2.mp4",
+    "片尾.mp4"
+  ],
+  "first_video": "片头*.mp4",
+  "last_video": "*片尾.mp4",
+  "output_name": "本目录成片.mp4",
+  "trims": {
+    "主体2.mp4": {
+      "start": 0.5,
+      "end": 8.2
+    }
+  },
+  "settings": {
+    "transition_type": "wipeleft",
+    "transition_frames": 30,
+    "canvas_mode": "crop",
+    "canvas_position": "top",
+    "clip_max_duration_seconds": 10,
+    "cover_frames": 30,
+    "cover_zoom_percent": 108,
+    "cover_title": "项目标题",
+    "sharpen_amount": 0.6,
+    "denoise_strength": 1.5,
+    "normalize_audio": true,
+    "loudness_target_lufs": -16,
+    "duck_music_under_source": true,
+    "subtitle_style": {
+      "max_chars_per_line": 16,
+      "background_opacity_percent": 45,
+      "highlight_words": [
+        "安全",
+        "结构"
+      ],
+      "highlight_color": "#FFD400"
+    }
+  }
+}

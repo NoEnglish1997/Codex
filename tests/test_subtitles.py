@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from auto_video_editor.media.subtitles import SubtitleError, apply_ass_font, shift_ass, srt_to_ass
+from auto_video_editor.media.subtitles import (
+    SubtitleError,
+    apply_ass_font,
+    prepare_cover_title,
+    shift_ass,
+    srt_to_ass,
+)
 from auto_video_editor.models import SubtitleStyle
 
 
@@ -40,3 +46,27 @@ def test_ass_font_can_be_overridden_without_changing_other_style_fields():
 def test_invalid_srt_is_rejected():
     with pytest.raises(SubtitleError):
         srt_to_ass("1\nnot a time\nText", SubtitleStyle(), 0)
+
+
+def test_srt_wrap_background_shadow_and_keyword_highlight():
+    source = "1\n00:00:00,000 --> 00:00:02,000\n透明泳池结构安全非常重要\n"
+    style = SubtitleStyle(
+        background_opacity_percent=55,
+        shadow_depth=3,
+        max_chars_per_line=6,
+        highlight_words=("安全",),
+        highlight_color="#FFD400",
+    )
+    ass = srt_to_ass(source, style, 0)
+    assert ",3,5,3,2,60,60,180,1" in ass
+    assert r"\N" in ass
+    assert r"{\c&H00D4FF&}安全{\r}" in ass
+
+
+def test_cover_title_creates_centered_ass(tmp_path):
+    path = prepare_cover_title("结构安全", tmp_path, duration_seconds=0.5, font_name="SimHei")
+    assert path is not None
+    text = path.read_text(encoding="utf-8-sig")
+    assert "Style: CoverTitle,SimHei" in text
+    assert "0:00:00.50" in text
+    assert "结构安全" in text

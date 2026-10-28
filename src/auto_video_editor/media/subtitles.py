@@ -64,6 +64,40 @@ def _escape_ass_text(lines: list[str]) -> str:
     return text.replace("<i>", r"{\i1}").replace("</i>", r"{\i0}").replace("<b>", r"{\b1}").replace("</b>", r"{\b0}")
 
 
+def _wrap_lines(lines: list[str], max_chars: int) -> list[str]:
+    wrapped: list[str] = []
+    limit = max(4, max_chars)
+    for line in lines:
+        value = line.strip()
+        if not value:
+            wrapped.append("")
+            continue
+        while len(value) > limit:
+            split = max(value.rfind(" ", 0, limit + 1), value.rfind("，", 0, limit + 1))
+            if split < max(1, limit // 2):
+                split = limit
+            wrapped.append(value[:split].strip())
+            value = value[split:].strip()
+        if value:
+            wrapped.append(value)
+    return wrapped
+
+
+def _ass_tag_color(hex_color: str) -> str:
+    value = _ass_color(hex_color)
+    return "&H" + value[4:] + "&"
+
+
+def _highlight_words(text: str, style: SubtitleStyle) -> str:
+    color = _ass_tag_color(style.highlight_color)
+    result = text
+    for word in sorted(set(style.highlight_words), key=len, reverse=True):
+        safe = word.strip()
+        if safe:
+            result = result.replace(safe, rf"{{\c{color}}}{safe}{{\r}}")
+    return result
+
+
 def _safe_font_name(font_name: str) -> str:
     value = font_name.replace("\r", " ").replace("\n", " ").replace(",", " ").strip()
     return value or "Microsoft YaHei"
@@ -89,13 +123,16 @@ def srt_to_ass(text: str, style: SubtitleStyle, offset_seconds: float) -> str:
         end = _parse_srt_time(match.group("end")) + offset_ms
         if end <= start:
             raise SubtitleError("字幕结束时间必须晚于开始时间。")
-        body = _escape_ass_text(lines[1:])
+        body = _escape_ass_text(_wrap_lines(lines[1:], style.max_chars_per_line))
+        body = _highlight_words(body, style)
         events.append(
             f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},Default,,0,0,0,,{body}"
         )
     if not events:
         raise SubtitleError("字幕中没有可用事件。")
     font_name = _safe_font_name(style.font_name)
+    background_alpha = round(255 * (1 - min(100, max(0, style.background_opacity_percent)) / 100))
+    border_style = 3 if style.background_opacity_percent > 0 else 1
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1440
@@ -105,7 +142,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{style.font_size},{_ass_color(style.primary_color)},&H000000FF,{_ass_color(style.outline_color)},&H64000000,0,0,0,0,100,100,0,0,1,{style.outline_width},0,2,60,60,{style.margin_bottom},1
+Style: Default,{font_name},{style.font_size},{_ass_color(style.primary_color)},&H000000FF,{_ass_color(style.outline_color)},{_ass_color(style.outline_color, f'{background_alpha:02X}')},0,0,0,0,100,100,0,0,{border_style},{style.outline_width},{style.shadow_depth},2,{style.margin_horizontal},{style.margin_horizontal},{style.margin_bottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -172,5 +209,36 @@ def prepare_subtitles(
         raise SubtitleError(f"不支持的字幕格式：{source_path.suffix}")
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / "subtitles.ass"
+    destination.write_text(content, encoding="utf-8-sig", newline="\n")
+    return destination
+
+
+def prepare_cover_title(
+    title: str,
+    destination_dir: Path,
+    *,
+    duration_seconds: float,
+    font_name: str,
+) -> Path | None:
+    value = title.replace("\r", " ").replace("\n", " ").strip()
+    if not value or duration_seconds <= 0:
+        return None
+    safe_title = _escape_ass_text([value])
+    content = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1440
+PlayResY: 2560
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: CoverTitle,{_safe_font_name(font_name)},92,&H00FFFFFF,&H000000FF,&H00000000,&H70000000,1,0,0,0,100,100,0,0,3,5,0,5,80,80,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,{_format_ass_time(round(duration_seconds * 1000))},CoverTitle,,0,0,0,,{safe_title}
+"""
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / "cover_title.ass"
     destination.write_text(content, encoding="utf-8-sig", newline="\n")
     return destination

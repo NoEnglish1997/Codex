@@ -11,7 +11,15 @@ from auto_video_editor.media.video_filters import (
     normalized_frame_count,
 )
 from auto_video_editor.media.timeline import calculate_timeline
-from auto_video_editor.models import InterpolationMode, ProbeInfo, RenderSettings
+from auto_video_editor.models import (
+    CanvasMode,
+    CanvasPosition,
+    InterpolationMode,
+    LogoMotion,
+    ProbeInfo,
+    RenderSettings,
+    TransitionType,
+)
 
 
 def _probe(width=1920, height=1080, fps=Fraction(30, 1)):
@@ -144,3 +152,87 @@ def test_normalized_frame_count_matches_filter_trim_rule():
     assert normalized_frame_count(probe, settings) == 180
     graph = build_normalization_filter(probe, settings)
     assert "trim=end_frame=180" in graph
+
+
+def test_trim_crop_position_and_non_ai_enhancement_are_in_single_graph():
+    settings = RenderSettings(
+        interpolation_mode=InterpolationMode.FAST,
+        canvas_mode=CanvasMode.CROP,
+        canvas_position=CanvasPosition.CUSTOM,
+        canvas_x_percent=25,
+        canvas_y_percent=75,
+        denoise_strength=2,
+        brightness=0.05,
+        contrast=1.1,
+        saturation=1.2,
+        shadow_boost=0.4,
+        highlight_protection=0.5,
+        sharpen_amount=0.8,
+    )
+    probe = _probe()
+    timeline = calculate_timeline([120], False)
+    graph, _ = build_single_pass_video_filtergraph(
+        (probe,), settings, timeline, None, clip_ranges=((0.5, 2.5),)
+    )
+    assert "trim=start=0.500000000:end=2.500000000" in graph
+    assert "crop=w=1440:h=2560" in graph
+    assert "(iw-ow)*0.250000" in graph
+    assert "hqdn3d=" in graph
+    assert "eq=brightness=0.0500:contrast=1.1000:saturation=1.2000" in graph
+    assert "curves=" in graph
+    assert "unsharp=5:5:0.80" in graph
+
+
+def test_no_transition_uses_concat_and_custom_transition_uses_xfade_name():
+    probes = (_probe(), _probe())
+    no_transition = RenderSettings(
+        interpolation_mode=InterpolationMode.FAST,
+        transition_type=TransitionType.NONE,
+        transition_frames=0,
+    )
+    graph, _ = build_single_pass_video_filtergraph(
+        probes, no_transition, calculate_timeline([180, 180], False, transition_frames=0), None
+    )
+    assert "concat=n=2:v=1:a=0" in graph
+    assert "xfade=" not in graph
+    wipe = RenderSettings(
+        interpolation_mode=InterpolationMode.FAST,
+        transition_type=TransitionType.WIPE_LEFT,
+        transition_frames=30,
+    )
+    graph, _ = build_single_pass_video_filtergraph(
+        probes, wipe, calculate_timeline([180, 180], False, transition_frames=30), None
+    )
+    assert "xfade=transition=wipeleft:duration=0.500000000" in graph
+
+
+def test_cover_animation_title_and_logo_custom_path_are_real_filters():
+    settings = RenderSettings(
+        interpolation_mode=InterpolationMode.FAST,
+        cover_frames=30,
+        cover_zoom_percent=110,
+        cover_fadein_seconds=0.2,
+        logo_motion=LogoMotion.CUSTOM,
+        logo_start_frame=10,
+        logo_end_frame=100,
+        logo_start_x_percent=10,
+        logo_start_y_percent=20,
+        logo_end_x_percent=80,
+        logo_end_y_percent=90,
+        logo_fade_seconds=0.2,
+    )
+    graph, _ = build_single_pass_video_filtergraph(
+        (_probe(),),
+        settings,
+        calculate_timeline([180], True, cover_frames=30),
+        None,
+        cover_input=(1, 320, 180),
+        logo_input_index=2,
+        cover_title_path=Path("C:/tmp/title.ass"),
+    )
+    assert "zoompan=" in graph
+    assert "fade=t=in:st=0:d=0.200000" in graph
+    assert "subtitles=filename='" in graph and "title.ass" in graph
+    assert "enable='between(n,9,99)'" in graph
+    assert "fade=t=in:st=0.150000:d=0.200000:alpha=1" in graph
+    assert "(0.100000+(0.700000)*clip((n-9)/90,0,1))" in graph

@@ -15,6 +15,7 @@ from auto_video_editor.models import (
     RenderJob,
     RenderSettings,
     SourceAudioMode,
+    TransitionType,
     VideoItem,
 )
 
@@ -87,3 +88,33 @@ def test_single_pass_audio_uses_original_tracks_silence_crossfade_and_music(tmp_
     assert "[3:a]aresample=48000" in graph
     assert "amix=inputs=2" in graph
     assert label == "[aout]"
+
+
+def test_audio_trim_normalization_ducking_fades_and_no_transition_concat(tmp_path):
+    settings = RenderSettings(
+        source_audio_mode=SourceAudioMode.MIX,
+        transition_type=TransitionType.NONE,
+        transition_frames=0,
+        normalize_audio=True,
+        duck_music_under_source=True,
+        music_fadein_seconds=0.4,
+        music_fadeout_seconds=0.6,
+    )
+    job = RenderJob(
+        (VideoItem(Path("a.mp4"), "a"), VideoItem(Path("b.mp4"), "b")),
+        None, None, Path("music.mp3"), tmp_path, "out.mp4", settings,
+    )
+    timeline = calculate_timeline([120, 120], False, transition_frames=0)
+    plan = build_audio_plan(job, timeline)
+    graph, _ = build_single_pass_audio_filtergraph(
+        plan,
+        timeline,
+        source_input_indices=(0, 1),
+        music_input_index=2,
+        clip_ranges=((0.2, 2.2), (0.4, 2.4)),
+    )
+    assert "atrim=start=0.200000000:end=2.200000000" in graph
+    assert "concat=n=2:v=0:a=1" in graph
+    assert "loudnorm=I=-16.0" in graph
+    assert "afade=t=in:st=0:d=0.400000000" in graph
+    assert "sidechaincompress=" in graph

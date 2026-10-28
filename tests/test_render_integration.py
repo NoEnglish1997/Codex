@@ -12,12 +12,17 @@ from auto_video_editor.media.ffmpeg_locator import detect_capabilities
 from auto_video_editor.media.progress import CancellationToken
 from auto_video_editor.media.renderer import RenderCancelled, Renderer
 from auto_video_editor.models import (
+    CanvasMode,
+    CanvasPosition,
     InterpolationMode,
     MusicShortPolicy,
+    LogoMotion,
     OutputQuality,
     RenderJob,
     RenderSettings,
     SourceAudioMode,
+    SubtitleStyle,
+    TransitionType,
     VideoEncoder,
     VideoItem,
 )
@@ -267,6 +272,81 @@ def test_real_motion_interpolation_without_optional_tracks(tmp_path, ffmpeg_capa
     assert not result.verification.probe.has_audio
     assert result.timeline.cover_frames == 0
     assert result.timeline.frame_counts == (int(source_probe.duration_seconds * 60 + 0.5),)
+
+
+@pytest.mark.integration
+def test_real_advanced_non_ai_pipeline_with_trim_cover_audio_and_custom_overlays(
+    tmp_path, ffmpeg_capabilities
+):
+    create_media = _load_media_factory()
+    media = create_media(tmp_path / "advanced-media", str(ffmpeg_capabilities.ffmpeg_path), duration=2.6)
+    settings = RenderSettings(
+        interpolation_mode=InterpolationMode.FAST,
+        source_audio_mode=SourceAudioMode.MIX,
+        video_encoder=VideoEncoder.X264,
+        output_quality=OutputQuality.STANDARD,
+        transition_type=TransitionType.WIPE_LEFT,
+        transition_frames=30,
+        cover_frames=18,
+        cover_fadein_seconds=0.1,
+        cover_zoom_percent=105,
+        cover_title="结构安全",
+        canvas_mode=CanvasMode.SOLID,
+        canvas_position=CanvasPosition.CUSTOM,
+        canvas_x_percent=30,
+        canvas_y_percent=60,
+        sharpen_amount=0.7,
+        denoise_strength=1.0,
+        brightness=0.02,
+        contrast=1.05,
+        saturation=1.08,
+        shadow_boost=0.2,
+        highlight_protection=0.2,
+        normalize_audio=True,
+        duck_music_under_source=True,
+        music_fadein_seconds=0.1,
+        music_fadeout_seconds=0.2,
+        logo_motion=LogoMotion.CUSTOM,
+        logo_start_frame=8,
+        logo_end_frame=180,
+        logo_start_x_percent=10,
+        logo_start_y_percent=10,
+        logo_end_x_percent=80,
+        logo_end_y_percent=80,
+        logo_fade_seconds=0.1,
+        subtitle_style=SubtitleStyle(
+            background_opacity_percent=45,
+            max_chars_per_line=8,
+            highlight_words=("字幕",),
+        ),
+    )
+    job = RenderJob(
+        (
+            VideoItem(media["landscape"], "a.mp4", trim_start_seconds=0.1, trim_end_seconds=2.4),
+            VideoItem(media["portrait"], "b.mp4", trim_start_seconds=0.2, trim_end_seconds=2.5),
+        ),
+        media["cover"],
+        media["subtitle"],
+        media["music"],
+        tmp_path / "advanced-output",
+        "advanced.mp4",
+        settings,
+        media["logo"],
+    )
+    result = Renderer(ffmpeg_capabilities, cache_root=tmp_path / "advanced-cache").render(
+        job, CancellationToken()
+    )
+    assert result.verification.valid
+    assert result.timeline.frame_counts == (138, 138)
+    assert result.timeline.total_frames == 264
+    assert result.cover_path and result.cover_path.is_file()
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["settings"]["transition_type"] == "wipeleft"
+    assert report["settings"]["normalize_audio"] is True
+    assert report["settings"]["duck_music_under_source"] is True
+    assert report["settings"]["logo_motion"] == "custom"
+    log = result.log_path.read_text(encoding="utf-8")
+    assert log.count("'-c:v', 'libx264'") == 1
 
 
 def test_nvenc_fallback_detection_is_limited_to_initialization_errors():

@@ -12,6 +12,12 @@ def test_settings_round_trip_is_atomic(tmp_path):
         output_dir=str(tmp_path),
         batch_input_dir="C:/素材总目录",
         output_prefix="成片测试_",
+        output_template="{date}_{folder}_{index}.mp4",
+        video_sort_mode="modified",
+        first_video_pattern="片头*",
+        last_video_pattern="*片尾.mp4",
+        watch_enabled=True,
+        watch_interval_seconds=12,
         interpolation_mode="fast",
         source_audio_mode="mix",
         music_short_policy="silence",
@@ -24,6 +30,7 @@ def test_settings_round_trip_is_atomic(tmp_path):
         logo_opacity_percent=65,
         ffmpeg_path="C:/工具/ffmpeg.exe",
         ffprobe_path="C:/工具/ffprobe.exe",
+        render_profile={"transition_type": "wipeleft", "normalize_audio": True},
     )
     store.save(expected)
     loaded = store.load()

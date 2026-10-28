@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from ..models import IssueSeverity, RenderJob, ValidationIssue
+from .clips import effective_clip_range
 from ..utils.paths import sanitize_output_filename
 
 
@@ -49,8 +50,18 @@ def validate_render_job(job: RenderJob) -> list[ValidationIssue]:
             continue
         if not item.probe.has_video:
             issues.append(ValidationIssue("no_video_stream", f"{item.display_name} 没有视频轨。"))
-        if item.probe.duration_seconds < 2.0:
-            issues.append(ValidationIssue("video_too_short", f"{item.display_name} 短于 2 秒，无法安全叠化。"))
+        try:
+            start, end = effective_clip_range(item, item.probe, job.settings)
+        except ValueError as exc:
+            issues.append(ValidationIssue("invalid_trim", str(exc)))
+            continue
+        transition_seconds = job.settings.transition_frames / job.settings.fps
+        minimum = transition_seconds * 2
+        if transition_seconds > 0 and end - start <= minimum:
+            issues.append(ValidationIssue(
+                "video_too_short",
+                f"{item.display_name} 裁剪后需长于 {minimum:.3f} 秒，才能安全容纳前后转场。",
+            ))
     if job.cover_path:
         issue = _path_issue(job.cover_path, "cover_path", "封面", COVER_EXTENSIONS)
         if issue:
@@ -92,4 +103,10 @@ def validate_render_job(job: RenderJob) -> list[ValidationIssue]:
         ))
     if not 0.0 <= job.settings.music_volume <= 1.0:
         issues.append(ValidationIssue("music_volume", "音乐音量必须在 0% 到 100% 之间。"))
+    if job.settings.transition_frames < 0:
+        issues.append(ValidationIssue("transition", "转场帧数不能为负数。"))
+    if job.settings.cover_frames < 0:
+        issues.append(ValidationIssue("cover", "封面帧数不能为负数。"))
+    if job.settings.logo_end_frame > 0 and job.settings.logo_end_frame < job.settings.logo_start_frame:
+        issues.append(ValidationIssue("logo_time", "Logo 结束帧不能早于开始帧。"))
     return issues
