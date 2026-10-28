@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from auto_video_editor.models import CanvasMode, InterpolationMode, OutputQuality, TransitionType
 from auto_video_editor.models import ProbeInfo, VideoItem
 from auto_video_editor.ui.main_window import MainWindow
-from auto_video_editor.ui.theme import APP_STYLESHEET, apply_theme
+from auto_video_editor.ui.theme import APP_STYLESHEET, THEME_COLORS, apply_theme
 from auto_video_editor.ui.video_list_widget import VideoListWidget
 
 
@@ -57,6 +57,13 @@ def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypat
     assert window.start_button.objectName() == "primaryButton"
     assert window.config_widget.objectName() == "configSurface"
     assert window.log_view.height() == 92
+    assert window.page_stack.count() == 4
+    assert window.nav_list.count() == 4
+    assert window.nav_list.accessibleName() == "工作区导航"
+    assert window.compact_navigation.accessibleName() == "紧凑工作区导航"
+    assert window.nav_list.item(2).isHidden()
+    assert THEME_COLORS["background"] == "#0B1120"
+    assert "qlineargradient" not in APP_STYLESHEET
     window._select_combo(window.transition_type_combo, TransitionType.WIPE_LEFT.value)
     window.transition_seconds.setValue(0.5)
     window._select_combo(window.canvas_mode_combo, CanvasMode.CROP.value)
@@ -75,8 +82,24 @@ def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypat
     assert settings.duck_music_under_source is True
     assert settings.cover_title == "结构安全"
     assert settings.subtitle_style.highlight_words == ("安全", "结构")
+    window._select_combo(window.mode_combo, "manual")
+    assert not window.nav_list.item(2).isHidden()
+    window.nav_list.setCurrentRow(1)
+    assert window.page_stack.currentIndex() == 1
+    assert window.compact_navigation.currentIndex() == 1
+    window.resize(900, 650)
     window.show()
     app.processEvents()
+    assert window.nav_list.isHidden()
+    assert window.compact_navigation.isVisible()
+    for index in (0, 1, 3):
+        window.compact_navigation.setCurrentIndex(index)
+        app.processEvents()
+        assert window.page_stack.currentWidget().horizontalScrollBar().maximum() == 0
+    window.resize(1180, 820)
+    app.processEvents()
+    assert window.nav_list.isVisible()
+    assert window.compact_navigation.isHidden()
     window.toggle_log_button.click()
     assert window.log_view.isHidden()
     assert window.toggle_log_button.text() == "显示日志"

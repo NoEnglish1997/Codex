@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QThread, QTimer, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QPixmap
+from PySide6.QtCore import QProcess, QSize, QThread, QTimer, Qt, QUrl
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QInputDialog,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -87,7 +89,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V3.1")
+        self.setWindowTitle("自动视频剪辑 V3.2")
         self.resize(1080, 780)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -125,72 +127,181 @@ class MainWindow(QMainWindow):
         self.detect_tools()
 
     def _build_ui(self) -> None:
-        scroll = QScrollArea(self)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidgetResizable(True)
-        self.config_widget = QWidget(scroll)
+        outer = QWidget(self)
+        outer.setObjectName("appRoot")
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(12, 12, 12, 12)
+        outer_layout.setSpacing(10)
+        outer_layout.addWidget(self._build_hero())
+
+        self.config_widget = QFrame()
         self.config_widget.setObjectName("configSurface")
-        main = QVBoxLayout(self.config_widget)
-        main.setContentsMargins(18, 16, 18, 20)
-        main.setSpacing(12)
-        main.addWidget(self._build_hero())
-        main.addWidget(self._build_tools_group())
+        workspace = QHBoxLayout(self.config_widget)
+        workspace.setContentsMargins(0, 0, 0, 0)
+        workspace.setSpacing(10)
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("pageStack")
+        self.nav_list = self._build_sidebar()
+        workspace.addWidget(self.nav_list)
+        workspace.addWidget(self.page_stack, 1)
+
+        project_page, project = self._build_page_shell(
+            "项目与素材",
+            "选择工作模式、组织素材并设置输出位置。",
+        )
         quick_row = QHBoxLayout()
-        quick_row.setSpacing(12)
+        quick_row.setSpacing(8)
         quick_row.addWidget(self._build_mode_group(), 1)
         quick_row.addWidget(self._build_preset_group(), 2)
-        main.addLayout(quick_row)
+        project.addLayout(quick_row)
         self.batch_group = self._build_batch_group()
-        main.addWidget(self.batch_group)
+        project.addWidget(self.batch_group)
         self.video_group = self._build_video_group()
-        main.addWidget(self.video_group, 2)
+        project.addWidget(self.video_group)
         self.optional_group = self._build_optional_group()
-        main.addWidget(self.optional_group)
-        main.addWidget(self._build_settings_group())
-        main.addWidget(self._build_advanced_group())
-        self.preview_group = self._build_preview_group()
-        main.addWidget(self.preview_group)
+        project.addWidget(self.optional_group)
         self.output_group = self._build_output_group()
-        main.addWidget(self.output_group)
-        scroll.setWidget(self.config_widget)
+        project.addWidget(self.output_group)
+        project.addStretch(1)
 
-        outer = QWidget(self)
-        outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(10, 10, 10, 10)
-        outer_layout.setSpacing(10)
-        outer_layout.addWidget(scroll, 1)
+        settings_page, settings = self._build_page_shell(
+            "剪辑与效果",
+            "调整画布、转场、封面、Logo、字幕与音频处理。",
+        )
+        settings.addWidget(self._build_settings_group())
+        settings.addWidget(self._build_advanced_group())
+        settings.addStretch(1)
+
+        preview_page, preview = self._build_page_shell(
+            "画面预览",
+            "生成单帧预览并拖动主体位置，不必等待完整编码。",
+        )
+        self.preview_group = self._build_preview_group()
+        preview.addWidget(self.preview_group)
+        preview.addStretch(1)
+
+        tools_page, tools = self._build_page_shell(
+            "环境与工具",
+            "检测本地 FFmpeg、FFprobe 与可用编码能力。",
+        )
+        tools.addWidget(self._build_tools_group())
+        environment_note = QLabel(
+            "所有视频处理均在本机完成；程序不会上传素材，也不会静默下载 FFmpeg。"
+        )
+        environment_note.setObjectName("infoPanel")
+        environment_note.setWordWrap(True)
+        tools.addWidget(environment_note)
+        tools.addStretch(1)
+
+        for page in (project_page, settings_page, preview_page, tools_page):
+            self.page_stack.addWidget(page)
+        self.nav_list.currentRowChanged.connect(self._set_workspace_page)
+        self.compact_navigation.currentIndexChanged.connect(self._set_workspace_page)
+        self.nav_list.setCurrentRow(0)
+
+        outer_layout.addWidget(self.config_widget, 1)
         outer_layout.addWidget(self._build_run_group())
-        outer_layout.setStretch(0, 1)
-        outer_layout.setStretch(1, 0)
+        outer_layout.setStretch(0, 0)
+        outer_layout.setStretch(1, 1)
+        outer_layout.setStretch(2, 0)
         self.setCentralWidget(outer)
         self._on_mode_changed()
+        self._update_navigation_layout()
 
     def _build_hero(self) -> QFrame:
         hero = QFrame()
-        hero.setObjectName("heroCard")
+        hero.setObjectName("topBar")
         layout = QHBoxLayout(hero)
-        layout.setContentsMargins(24, 18, 22, 18)
-        layout.setSpacing(18)
+        layout.setContentsMargins(18, 11, 16, 11)
+        layout.setSpacing(14)
 
         text = QVBoxLayout()
-        text.setSpacing(3)
+        text.setSpacing(1)
         title = QLabel("自动视频剪辑")
-        title.setObjectName("heroTitle")
-        subtitle = QLabel("本地 FFmpeg 专业工作流 · 批量处理 · 单次最终编码")
-        subtitle.setObjectName("heroSubtitle")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("本地专业工作流 · 批量处理 · 单次最终编码")
+        subtitle.setObjectName("appSubtitle")
         text.addWidget(title)
         text.addWidget(subtitle)
         layout.addLayout(text, 1)
 
         chips = QHBoxLayout()
         chips.setSpacing(7)
-        for value in ("V3.1", "2K 竖屏", "完全本地", "非 AI"):
+        self.compact_navigation = QComboBox()
+        self.compact_navigation.setObjectName("compactNavigation")
+        self.compact_navigation.addItems(("项目与素材", "剪辑与效果", "画面预览", "环境与工具"))
+        self.compact_navigation.setAccessibleName("紧凑工作区导航")
+        self.compact_navigation.setVisible(False)
+        layout.addWidget(self.compact_navigation)
+        self.status_chips: list[QLabel] = []
+        for value in ("V3.2", "2K 竖屏", "完全本地", "非 AI"):
             chip = QLabel(value)
-            chip.setObjectName("heroChip")
+            chip.setObjectName("statusChip")
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.status_chips.append(chip)
             chips.addWidget(chip)
         layout.addLayout(chips)
         return hero
+
+    def _set_workspace_page(self, index: int) -> None:
+        if not hasattr(self, "page_stack") or not 0 <= index < self.page_stack.count():
+            return
+        self.page_stack.setCurrentIndex(index)
+        if hasattr(self, "nav_list") and self.nav_list.currentRow() != index:
+            self.nav_list.setCurrentRow(index)
+        if self.compact_navigation.currentIndex() != index:
+            self.compact_navigation.setCurrentIndex(index)
+
+    def _update_navigation_layout(self) -> None:
+        if not hasattr(self, "nav_list"):
+            return
+        compact = self.width() < 1040
+        self.nav_list.setVisible(not compact)
+        self.compact_navigation.setVisible(compact)
+        for chip in self.status_chips[1:]:
+            chip.setVisible(not compact)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_navigation_layout()
+
+    def _build_sidebar(self) -> QListWidget:
+        navigation = QListWidget()
+        navigation.setObjectName("workspaceNavigation")
+        navigation.setFixedWidth(176)
+        navigation.setSpacing(3)
+        navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for label in ("项目与素材", "剪辑与效果", "画面预览", "环境与工具"):
+            navigation.addItem(label)
+        for index in range(navigation.count()):
+            navigation.item(index).setSizeHint(QSize(152, 42))
+        navigation.setAccessibleName("工作区导航")
+        return navigation
+
+    def _build_page_shell(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setObjectName("workspacePage")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        content.setObjectName("pageContent")
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(16, 12, 16, 18)
+        layout.setSpacing(10)
+        heading = QLabel(title)
+        heading.setObjectName("pageTitle")
+        description = QLabel(subtitle)
+        description.setObjectName("pageSubtitle")
+        description.setWordWrap(True)
+        layout.addWidget(heading)
+        layout.addWidget(description)
+        layout.addSpacing(2)
+        scroll.setWidget(content)
+        return scroll, layout
 
     def _build_mode_group(self) -> QGroupBox:
         group = QGroupBox("工作模式")
@@ -519,7 +630,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_advanced_group(self) -> QGroupBox:
-        group = QGroupBox("高级剪辑设置（全部为本地 FFmpeg 非 AI 处理）")
+        group = QGroupBox("高级剪辑设置")
         outer = QVBoxLayout(group)
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
@@ -842,6 +953,14 @@ class MainWindow(QMainWindow):
         self.optional_group.setTitle("批量任务统一 Logo" if batch else "封面、Logo、字幕与配乐")
         if hasattr(self, "preview_group"):
             self.preview_group.setVisible(not batch)
+        if hasattr(self, "nav_list"):
+            preview_item = self.nav_list.item(2)
+            preview_item.setHidden(batch)
+            compact_preview = self.compact_navigation.model().item(2)
+            if compact_preview is not None:
+                compact_preview.setEnabled(not batch)
+            if batch and self.nav_list.currentRow() == 2:
+                self.nav_list.setCurrentRow(0)
         self.output_name_label.setText("文件名前缀" if batch else "文件名")
         self.filename_edit.setText(self._batch_prefix if batch else self._manual_filename)
         self.start_button.setText("开始批量剪辑" if batch else "开始剪辑")
