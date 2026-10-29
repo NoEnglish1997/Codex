@@ -5,7 +5,18 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QSize, QThread, QTimer, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QIcon, QPixmap, QResizeEvent
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPixmap,
+    QResizeEvent,
+    QShortcut,
+)
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame, QVideoSink
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -77,6 +88,7 @@ from ..presets import (
     render_settings_from_mapping,
     render_settings_to_mapping,
 )
+from ..project import ProjectClip, ProjectDocument, ProjectStore
 from ..media.video_filters import build_enhancement_filter, build_normalization_filter
 from ..media.watcher import FolderStabilityTracker
 from ..utils.paths import config_dir, sanitize_output_filename
@@ -90,7 +102,7 @@ from .video_list_widget import VideoListWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("AutoCut Studio · 自动视频剪辑 V3.4")
+        self.setWindowTitle("AutoCut Studio · 自动视频剪辑 V3.5")
         self.resize(1280, 820)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -119,12 +131,23 @@ class MainWindow(QMainWindow):
         self._preview_process: QProcess | None = None
         self._preview_path = config_dir() / "preview.jpg"
         self._preview_seek_seconds: float | None = None
+        self._current_project_path: Path | None = None
+        self._timeline_history: list[tuple[VideoItem, ...]] = [()]
+        self._timeline_history_index = 0
+        self._known_timeline_snapshot: tuple[VideoItem, ...] = ()
+        self._applying_history = False
         self._watch_tracker = FolderStabilityTracker()
         self._build_ui()
+        self._setup_preview_player()
+        self._setup_editor_shortcuts()
         self._timeline_preview_timer = QTimer(self)
         self._timeline_preview_timer.setSingleShot(True)
         self._timeline_preview_timer.setInterval(180)
         self._timeline_preview_timer.timeout.connect(self.generate_preview)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(800)
+        self._autosave_timer.timeout.connect(self._autosave_project)
         self._watch_timer = QTimer(self)
         self._watch_timer.timeout.connect(self._poll_watch_folder)
         self._on_watch_toggled(self.watch_checkbox.isChecked())
@@ -248,6 +271,20 @@ class MainWindow(QMainWindow):
         heading.addWidget(self.library_import_button)
         layout.addLayout(heading)
 
+        project_actions = QHBoxLayout()
+        for text, tooltip, callback in (
+            ("打开", "打开 AutoCut 项目（Ctrl+O）", self.open_project),
+            ("保存", "保存项目（Ctrl+S）", self.save_project),
+            ("另存", "将项目保存到新文件", self.save_project_as),
+            ("恢复", "恢复最近一次自动保存", self.restore_autosave),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("compactButton")
+            button.setToolTip(tooltip)
+            button.clicked.connect(callback)
+            project_actions.addWidget(button)
+        layout.addLayout(project_actions)
+
         self.project_search = QLineEdit()
         self.project_search.setPlaceholderText("搜索项目名称…")
         self.project_search.setClearButtonEnabled(True)
@@ -323,13 +360,13 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         self.preview_time = QLabel("00:18 / 00:58")
         self.preview_time.setObjectName("previewTime")
-        preview_button = QPushButton("▶")
-        preview_button.setObjectName("playButton")
-        preview_button.setToolTip("生成当前选中视频的静帧预览")
-        preview_button.clicked.connect(self.generate_preview)
+        self.preview_play_button = QPushButton("▶")
+        self.preview_play_button.setObjectName("playButton")
+        self.preview_play_button.setToolTip("连续播放/暂停源素材预览（空格）")
+        self.preview_play_button.clicked.connect(self._toggle_preview_playback)
         controls.addWidget(self.preview_time)
         controls.addStretch(1)
-        controls.addWidget(preview_button)
+        controls.addWidget(self.preview_play_button)
         controls.addStretch(1)
         self.preview_status = QLabel("静帧预览 · 不编码完整视频")
         self.preview_status.setObjectName("stageEyebrow")
@@ -347,13 +384,57 @@ class MainWindow(QMainWindow):
         timeline_heading.addStretch(1)
         timeline_heading.addWidget(self.timeline_hint)
         layout.addLayout(timeline_heading)
+
+        timeline_tools = QHBoxLayout()
+        self.undo_button = QPushButton("↶")
+        self.undo_button.setToolTip("撤销（Ctrl+Z）")
+        self.undo_button.clicked.connect(self.undo_timeline)
+        self.redo_button = QPushButton("↷")
+        self.redo_button.setToolTip("重做（Ctrl+Y）")
+        self.redo_button.clicked.connect(self.redo_timeline)
+        self.split_button = QPushButton("分割")
+        self.split_button.setToolTip("在播放头处分割片段（S）")
+        self.split_button.clicked.connect(self.split_at_playhead)
+        self.delete_clip_button = QPushButton("删除")
+        self.delete_clip_button.setToolTip("删除选中的片段（Delete）")
+        self.delete_clip_button.clicked.connect(self.delete_selected_clips)
+        self.snap_button = QCheckBox("吸附")
+        self.snap_button.setChecked(True)
+        self.timeline_zoom = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_zoom.setRange(100, 400)
+        self.timeline_zoom.setValue(100)
+        self.timeline_zoom.setFixedWidth(72)
+        for widget in (
+            self.undo_button,
+            self.redo_button,
+            self.split_button,
+            self.delete_clip_button,
+            self.snap_button,
+        ):
+            timeline_tools.addWidget(widget)
+        timeline_tools.addStretch(1)
+        timeline_tools.addWidget(QLabel("缩放"))
+        timeline_tools.addWidget(self.timeline_zoom)
+        layout.addLayout(timeline_tools)
         self.timeline_strip = TimelineStrip()
         self.timeline_strip.clip_selected.connect(self._on_timeline_clip_selected)
         self.timeline_strip.reorder_requested.connect(self._on_timeline_reorder)
         self.timeline_strip.trim_requested.connect(self._on_timeline_trim)
         self.timeline_strip.seek_requested.connect(self._on_timeline_seek)
         self.timeline_strip.transition_requested.connect(self._on_timeline_transition)
-        layout.addWidget(self.timeline_strip)
+        self.snap_button.toggled.connect(self.timeline_strip.set_snap_enabled)
+        self.timeline_zoom.valueChanged.connect(
+            lambda value: self.timeline_strip.set_zoom_factor(value / 100)
+        )
+        self.timeline_scroll = QScrollArea()
+        self.timeline_scroll.setObjectName("timelineScroll")
+        self.timeline_scroll.setWidgetResizable(True)
+        self.timeline_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.timeline_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.timeline_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.timeline_scroll.setFixedHeight(174)
+        self.timeline_scroll.setWidget(self.timeline_strip)
+        layout.addWidget(self.timeline_scroll)
         return stage
 
     def _build_inspector_pane(self) -> QFrame:
@@ -416,11 +497,13 @@ class MainWindow(QMainWindow):
             self.preview_label.setFixedSize(118, 210)
             self.header_log_button.setVisible(False)
             self.preview_status.setVisible(False)
+            self.timeline_hint.setVisible(False)
         else:
             self.workspace_splitter.setSizes([270, max(390, available - 700), 430])
             self.preview_label.setFixedSize(202, 359)
             self.header_log_button.setVisible(True)
             self.preview_status.setVisible(True)
+            self.timeline_hint.setVisible(True)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -531,12 +614,13 @@ class MainWindow(QMainWindow):
         self.video_list.files_dropped.connect(self.add_video_paths)
         self.video_list.order_changed.connect(self._update_estimate)
         self.video_list.order_changed.connect(self._update_studio_timeline)
+        self.video_list.order_changed.connect(self._record_timeline_change)
         self.video_list.itemSelectionChanged.connect(self._load_selected_trim)
         layout.addWidget(self.video_list)
         buttons = QHBoxLayout()
         for text, callback in (
             ("添加视频…", self._choose_videos),
-            ("删除", self.video_list.remove_selected),
+            ("删除", self.delete_selected_clips),
             ("上移", lambda: self.video_list.move_selected(-1)),
             ("下移", lambda: self.video_list.move_selected(1)),
         ):
@@ -614,6 +698,9 @@ class MainWindow(QMainWindow):
     def _on_timeline_seek(self, index: int, source_seconds: float) -> None:
         self.video_list.select_row(index)
         self._preview_seek_seconds = source_seconds
+        item = self.video_list.current_video()
+        if item is not None and self._player_source_path == item.source_path.resolve():
+            self._preview_player.setPosition(round(source_seconds * 1000))
         self.preview_time.setText(self._format_timestamp(source_seconds))
         if not self._capabilities:
             self.preview_status.setText("已定位播放头 · FFmpeg 未就绪")
@@ -633,6 +720,285 @@ class MainWindow(QMainWindow):
         minutes, remainder = divmod(value, 60_000)
         whole_seconds, milliseconds = divmod(remainder, 1000)
         return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+    def _setup_preview_player(self) -> None:
+        self._preview_audio = QAudioOutput(self)
+        self._preview_audio.setVolume(0.65)
+        self._video_sink = QVideoSink(self)
+        self._preview_player = QMediaPlayer(self)
+        self._preview_player.setAudioOutput(self._preview_audio)
+        self._preview_player.setVideoOutput(self._video_sink)
+        self._player_source_path: Path | None = None
+        self._video_sink.videoFrameChanged.connect(self._on_preview_video_frame)
+        self._preview_player.positionChanged.connect(self._on_preview_position)
+        self._preview_player.playbackStateChanged.connect(self._on_preview_playback_state)
+        self._preview_player.errorOccurred.connect(
+            lambda _error, detail: self.preview_status.setText(f"连续预览失败 · {detail}")
+        )
+
+    def _setup_editor_shortcuts(self) -> None:
+        shortcuts = (
+            (QKeySequence.StandardKey.Undo, self.undo_timeline),
+            (QKeySequence.StandardKey.Redo, self.redo_timeline),
+            (QKeySequence.StandardKey.Save, self.save_project),
+            (QKeySequence.StandardKey.Open, self.open_project),
+            (QKeySequence(Qt.Key.Key_S), self.split_at_playhead),
+            (QKeySequence(Qt.Key.Key_Delete), self.delete_selected_clips),
+            (QKeySequence(Qt.Key.Key_Space), self._toggle_preview_playback),
+        )
+        self._editor_shortcuts = []
+        for sequence, callback in shortcuts:
+            shortcut = QShortcut(sequence, self)
+            shortcut.activated.connect(callback)
+            self._editor_shortcuts.append(shortcut)
+
+    def _on_preview_video_frame(self, frame: QVideoFrame) -> None:
+        if not frame.isValid():
+            return
+        image = frame.toImage()
+        if image.isNull():
+            return
+        pixmap = QPixmap.fromImage(image)
+        self.preview_label.setPixmap(
+            pixmap.scaled(
+                self.preview_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _on_preview_position(self, milliseconds: int) -> None:
+        item = self.video_list.current_video()
+        index = self.video_list.current_video_index()
+        if item is None or item.probe is None or index < 0:
+            return
+        seconds = milliseconds / 1000
+        end = item.trim_end_seconds if item.trim_end_seconds > 0 else item.probe.duration_seconds
+        if seconds >= end and self._preview_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._preview_player.pause()
+            seconds = end
+            if index + 1 < self.video_list.topLevelItemCount():
+                self.video_list.select_row(index + 1)
+                next_item = self.video_list.current_video()
+                if next_item is not None:
+                    next_source = next_item.source_path.resolve()
+                    if self._player_source_path != next_source:
+                        self._preview_player.setSource(QUrl.fromLocalFile(str(next_source)))
+                        self._player_source_path = next_source
+                    self._preview_seek_seconds = next_item.trim_start_seconds
+                    self._preview_player.setPosition(round(next_item.trim_start_seconds * 1000))
+                    self._preview_player.play()
+                    return
+        self._preview_seek_seconds = seconds
+        self.timeline_strip.set_playhead(index, seconds)
+        self.preview_time.setText(
+            f"{self._format_timestamp(seconds)} / {self._format_timestamp(end)}"
+        )
+
+    def _on_preview_playback_state(self, state: QMediaPlayer.PlaybackState) -> None:
+        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self.preview_play_button.setText("❚❚" if playing else "▶")
+        if playing:
+            self.preview_status.setText("实时播放源素材 · 最终特效以导出为准")
+        elif self._player_source_path is not None:
+            self.preview_status.setText("预览已暂停 · 空格继续")
+
+    def _toggle_preview_playback(self) -> None:
+        if str(self.mode_combo.currentData()) != "manual":
+            self.preview_status.setText("连续播放仅用于手动剪辑模式")
+            return
+        item = self.video_list.current_video()
+        if item is None:
+            items = self.video_list.video_items()
+            if not items:
+                QMessageBox.information(self, "无法播放", "请先添加视频素材。")
+                return
+            self.video_list.select_row(0)
+            item = items[0]
+        if self._preview_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._preview_player.pause()
+            return
+        source = item.source_path.resolve()
+        if self._player_source_path != source:
+            self._preview_player.stop()
+            self._preview_player.setSource(QUrl.fromLocalFile(str(source)))
+            self._player_source_path = source
+            start = item.trim_start_seconds
+            self._preview_player.setPosition(round(start * 1000))
+        elif self._preview_seek_seconds is not None:
+            self._preview_player.setPosition(round(self._preview_seek_seconds * 1000))
+        self._preview_player.play()
+
+    def _record_timeline_change(self) -> None:
+        snapshot = self.video_list.video_items()
+        if self._applying_history:
+            self._known_timeline_snapshot = snapshot
+            return
+        if snapshot == self._known_timeline_snapshot:
+            return
+        self._timeline_history = self._timeline_history[: self._timeline_history_index + 1]
+        self._timeline_history.append(snapshot)
+        self._timeline_history_index += 1
+        self._known_timeline_snapshot = snapshot
+        self._update_history_actions()
+        if hasattr(self, "_autosave_timer"):
+            self._autosave_timer.start()
+
+    def _update_history_actions(self) -> None:
+        if hasattr(self, "undo_button"):
+            self.undo_button.setEnabled(self._timeline_history_index > 0)
+            self.redo_button.setEnabled(self._timeline_history_index + 1 < len(self._timeline_history))
+
+    def _restore_history_snapshot(self, snapshot: tuple[VideoItem, ...]) -> None:
+        self._applying_history = True
+        try:
+            self.video_list.set_video_items(snapshot)
+        finally:
+            self._applying_history = False
+            self._known_timeline_snapshot = snapshot
+        self._update_history_actions()
+
+    def undo_timeline(self) -> None:
+        if self._timeline_history_index <= 0:
+            return
+        self._timeline_history_index -= 1
+        self._restore_history_snapshot(self._timeline_history[self._timeline_history_index])
+        self.preview_status.setText("已撤销时间线操作")
+
+    def redo_timeline(self) -> None:
+        if self._timeline_history_index + 1 >= len(self._timeline_history):
+            return
+        self._timeline_history_index += 1
+        self._restore_history_snapshot(self._timeline_history[self._timeline_history_index])
+        self.preview_status.setText("已重做时间线操作")
+
+    def delete_selected_clips(self) -> None:
+        if str(self.mode_combo.currentData()) != "manual":
+            return
+        self.video_list.remove_selected()
+
+    def split_at_playhead(self) -> None:
+        if str(self.mode_combo.currentData()) != "manual":
+            return
+        row = self.video_list.current_video_index()
+        item = self.video_list.current_video()
+        if item is None or row < 0 or self._preview_seek_seconds is None:
+            self.preview_status.setText("请先在时间线上定位播放头，再执行分割")
+            return
+        if self.video_list.split_row(row, self._preview_seek_seconds):
+            self.preview_status.setText(f"已在 {self._format_timestamp(self._preview_seek_seconds)} 分割")
+        else:
+            self.preview_status.setText("播放头太靠近片段边缘，无法分割")
+
+    def _project_document(self) -> ProjectDocument:
+        return ProjectDocument(
+            clips=tuple(ProjectClip.from_video_item(item) for item in self.video_list.video_items()),
+            settings=self._render_settings(),
+            cover_path=Path(self.cover_edit.text()) if self.cover_edit.text() else None,
+            subtitle_path=Path(self.subtitle_edit.text()) if self.subtitle_edit.text() else None,
+            music_path=Path(self.music_edit.text()) if self.music_edit.text() else None,
+            logo_path=Path(self.logo_edit.text()) if self.logo_edit.text() else None,
+            output_dir=Path(self.output_dir_edit.text()) if self.output_dir_edit.text() else None,
+            output_filename=self.filename_edit.text().strip() or "edited_video.mp4",
+        )
+
+    def save_project(self) -> None:
+        if self._current_project_path is None:
+            self.save_project_as()
+            return
+        try:
+            ProjectStore.save(self._current_project_path, self._project_document())
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "项目保存失败", str(exc))
+            return
+        self.preview_status.setText(f"项目已保存 · {self._current_project_path.name}")
+
+    def save_project_as(self) -> None:
+        suggested = self._current_project_path or (Path(self.output_dir_edit.text()) / "未命名项目.autocut.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存剪辑项目", str(suggested), "AutoCut 项目 (*.autocut.json);;JSON (*.json)"
+        )
+        if not path:
+            return
+        self._current_project_path = Path(path)
+        self.save_project()
+
+    def open_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开剪辑项目", "", "AutoCut 项目 (*.autocut.json *.json)"
+        )
+        if not path:
+            return
+        self._load_project_path(Path(path))
+
+    def restore_autosave(self) -> None:
+        path = config_dir() / "autosave.autocut.json"
+        if not path.is_file():
+            QMessageBox.information(self, "没有恢复文件", "当前没有可恢复的自动保存项目。")
+            return
+        self._load_project_path(path)
+
+    def _load_project_path(self, path: Path) -> None:
+        if not self._capabilities:
+            QMessageBox.warning(self, "无法打开项目", "请先完成 FFmpeg / FFprobe 检测。")
+            return
+        try:
+            document = ProjectStore.load(path)
+            videos: list[VideoItem] = []
+            missing: list[str] = []
+            for clip in document.clips:
+                if not clip.source_path.is_file():
+                    missing.append(str(clip.source_path))
+                    continue
+                probe = probe_media(clip.source_path, self._capabilities.ffprobe_path)
+                videos.append(VideoItem(
+                    clip.source_path,
+                    clip.source_path.name,
+                    probe,
+                    clip.trim_start_seconds,
+                    clip.trim_end_seconds,
+                ))
+        except (ValueError, ProbeError, OSError) as exc:
+            QMessageBox.critical(self, "项目打开失败", str(exc))
+            return
+        self._select_combo(self.mode_combo, "manual")
+        self._apply_settings_to_controls(document.settings)
+        for edit, value, kind in (
+            (self.cover_edit, document.cover_path, "cover"),
+            (self.subtitle_edit, document.subtitle_path, "subtitle"),
+            (self.music_edit, document.music_path, "music"),
+            (self.logo_edit, document.logo_path, "logo"),
+        ):
+            self._set_optional_path(edit, str(value) if value else "", kind)
+        if document.output_dir:
+            self.output_dir_edit.setText(str(document.output_dir))
+        self.filename_edit.setText(document.output_filename)
+        self._applying_history = True
+        try:
+            self.video_list.set_video_items(videos)
+        finally:
+            self._applying_history = False
+        snapshot = tuple(videos)
+        self._timeline_history = [snapshot]
+        self._timeline_history_index = 0
+        self._known_timeline_snapshot = snapshot
+        self._current_project_path = None if path.name == "autosave.autocut.json" else path
+        self._update_history_actions()
+        self.preview_status.setText(f"项目已恢复 · {path.name}")
+        if missing:
+            QMessageBox.warning(
+                self,
+                "部分素材缺失",
+                "以下素材未找到，已跳过：\n" + "\n".join(missing[:8]),
+            )
+
+    def _autosave_project(self) -> None:
+        if not self.video_list.video_items():
+            return
+        try:
+            ProjectStore.save(config_dir() / "autosave.autocut.json", self._project_document())
+        except OSError as exc:
+            self._append_log(f"项目自动保存失败：{exc}")
 
     def _build_optional_group(self) -> QGroupBox:
         group = QGroupBox("品牌与媒体")
@@ -2200,10 +2566,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._thread is None:
+            if hasattr(self, "video_list") and self.video_list.video_items():
+                self._autosave_project()
             if hasattr(self, "_watch_timer"):
                 self._watch_timer.stop()
             if self._preview_process and self._preview_process.state() != QProcess.ProcessState.NotRunning:
                 self._preview_process.kill()
+            if hasattr(self, "_preview_player"):
+                self._preview_player.stop()
             event.accept()
             return
         answer = QMessageBox.question(

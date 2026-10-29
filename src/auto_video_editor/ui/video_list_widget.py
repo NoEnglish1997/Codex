@@ -39,7 +39,7 @@ class VideoListWidget(QTreeWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff if enabled else Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
 
-    def add_video(self, video: VideoItem) -> None:
+    def add_video(self, video: VideoItem, *, notify: bool = True) -> None:
         probe = video.probe
         duration = f"{probe.duration_seconds:.2f}s" if probe else "未读取"
         resolution = f"{probe.display_width}×{probe.display_height}" if probe else "—"
@@ -54,13 +54,39 @@ class VideoListWidget(QTreeWidget):
             f"FPS：{frame_rate}\n音轨：{audio}\n裁剪：{trim}",
         )
         self.addTopLevelItem(item)
-        self.order_changed.emit()
+        if notify:
+            self.order_changed.emit()
 
     def video_items(self) -> tuple[VideoItem, ...]:
         return tuple(
             self.topLevelItem(index).data(0, Qt.ItemDataRole.UserRole)
             for index in range(self.topLevelItemCount())
         )
+
+    def set_video_items(self, videos: tuple[VideoItem, ...] | list[VideoItem]) -> None:
+        self.clear()
+        for video in videos:
+            self.add_video(video, notify=False)
+        self.order_changed.emit()
+
+    def split_row(self, row: int, source_seconds: float) -> bool:
+        if not 0 <= row < self.topLevelItemCount():
+            return False
+        tree_item = self.topLevelItem(row)
+        video = tree_item.data(0, Qt.ItemDataRole.UserRole)
+        duration = video.probe.duration_seconds if video.probe else 0.0
+        effective_end = video.trim_end_seconds if video.trim_end_seconds > 0 else duration
+        frame = 1 / 60
+        if source_seconds <= video.trim_start_seconds + frame or source_seconds >= effective_end - frame:
+            return False
+        split = round(source_seconds * 60) / 60
+        left = replace(video, trim_end_seconds=split)
+        right = replace(video, trim_start_seconds=split)
+        items = list(self.video_items())
+        items[row : row + 1] = [left, right]
+        self.set_video_items(items)
+        self.select_row(row + 1)
+        return True
 
     def current_video(self) -> VideoItem | None:
         item = self.currentItem()

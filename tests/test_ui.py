@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from auto_video_editor.models import CanvasMode, InterpolationMode, OutputQuality, TransitionType
 from auto_video_editor.models import ProbeInfo, VideoItem
+from auto_video_editor.project import ProjectStore
 from auto_video_editor.ui.main_window import MainWindow
 from auto_video_editor.ui.theme import APP_STYLESHEET, THEME_COLORS, apply_theme
 from auto_video_editor.ui.video_list_widget import VideoListWidget
@@ -156,6 +157,40 @@ def test_manual_timeline_controls_real_source_order_trim_seek_and_transition(tmp
     window.timeline_strip.transition_requested.emit(0)
     assert window.inspector_tabs.currentIndex() == 2
     assert window.advanced_tabs.currentIndex() == 1
+    window.close()
+    app.processEvents()
+
+
+def test_manual_editor_split_undo_redo_delete_and_autosave(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
+    window = MainWindow()
+    window._select_combo(window.mode_combo, "manual")
+    window.video_list.add_video(_item("第一段.mp4"))
+    window.video_list.select_row(0)
+    window._preview_seek_seconds = 1.5
+
+    window.split_at_playhead()
+    clips = window.video_list.video_items()
+    assert len(clips) == 2
+    assert clips[0].trim_end_seconds == 1.5
+    assert clips[1].trim_start_seconds == 1.5
+    assert window.undo_button.isEnabled()
+
+    window.undo_timeline()
+    assert len(window.video_list.video_items()) == 1
+    assert window.redo_button.isEnabled()
+    window.redo_timeline()
+    assert len(window.video_list.video_items()) == 2
+
+    window.video_list.select_row(1)
+    window.delete_selected_clips()
+    assert len(window.video_list.video_items()) == 1
+    window._autosave_project()
+    autosave = tmp_path / "config" / "AutoVideoEditor" / "autosave.autocut.json"
+    assert autosave.is_file()
+    assert ProjectStore.load(autosave).clips[0].trim_end_seconds == 1.5
     window.close()
     app.processEvents()
 

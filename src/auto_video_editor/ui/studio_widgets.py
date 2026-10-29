@@ -64,9 +64,20 @@ class TimelineStrip(QWidget):
         self._drag_target = -1
         self._drag_start_x = 0.0
         self._drag_original: TimelineClipView | None = None
+        self._zoom_factor = 1.0
+        self._snap_enabled = True
 
     def sizeHint(self) -> QSize:
-        return QSize(620, 160)
+        return QSize(round(620 * self._zoom_factor), 160)
+
+    def set_zoom_factor(self, factor: float) -> None:
+        self._zoom_factor = min(4.0, max(1.0, factor))
+        self.setMinimumWidth(round(320 * self._zoom_factor))
+        self.updateGeometry()
+        self.update()
+
+    def set_snap_enabled(self, enabled: bool) -> None:
+        self._snap_enabled = enabled
 
     @property
     def clip_labels(self) -> tuple[str, ...]:
@@ -321,10 +332,14 @@ class TimelineStrip(QWidget):
                 clip = self._drag_original
                 if self._drag_mode == "trim_start":
                     start = min(clip.effective_end - 0.1, max(0.0, clip.trim_start_seconds + delta))
+                    if self._snap_enabled:
+                        start = round(start * 60) / 60
                     self._clips[self._drag_index] = replace(clip, trim_start_seconds=start)
                 else:
                     original_end = clip.effective_end
                     end = min(clip.duration_seconds, max(clip.trim_start_seconds + 0.1, original_end + delta))
+                    if self._snap_enabled:
+                        end = round(end * 60) / 60
                     self._clips[self._drag_index] = replace(clip, trim_end_seconds=end)
             self.update()
             event.accept()
