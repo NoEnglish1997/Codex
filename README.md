@@ -1,11 +1,11 @@
-# 自动视频剪辑 V3.2
+# 自动视频剪辑 V3.3
 
 完全本地运行的 Windows 桌面自动剪辑软件，使用 Python 3.11/3.12、PySide6、FFmpeg 和 FFprobe。素材不会上传，也不依赖在线 API。
 
-## V3.2 已实现能力
+## V3.3 已实现能力
 
 - **完整批量生产**：扫描素材总目录的直接子文件夹；自然/创建时间/修改时间/`config.json`/确定性随机五种排序，可用通配符固定片头片尾。
-- **专业剪辑工作区**：依据开源 [`UI UX Pro Max`](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) Skill 的短视频编辑器设计系统重写为深色 OLED 界面；采用顶部应用栏、左侧分页导航、蓝色主操作、粉色编辑焦点及紧凑可隐藏日志。
+- **Desert Rose 创作工作台**：依据 Anthropic 官方开源 [`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design) 与 [`theme-factory`](https://github.com/anthropics/skills/tree/main/skills/theme-factory) Skills 重写为酒红、陶土和暖沙色的原生桌面界面；批量项目库、9:16 预览、视频/音频时间线、导出检查器和固定任务栏构成真正的三栏剪辑工作流。
 - **灵活命名与自动监控**：命名模板支持 `{prefix}`、`{folder}`、`{index}`、`{date}`；可监控新增子目录，连续两次检测文件不再变化后自动处理。
 - **目录级配置**：每个子目录可用 `config.json` 指定视频顺序、逐片裁剪、输出名及剪辑参数，且不会影响其他目录。
 - **失败隔离**：单任务失败继续队列；“仅重试失败任务”不会重复成功任务；完整日志可下载，批量输出目录只交付 MP4。
@@ -90,7 +90,7 @@ ffmpeg -filters | findstr /I "xfade minterpolate subtitles overlay gblur hqdn3d 
 5. 选择一个单独的输出目录，填写前缀及命名模板。默认 `{prefix}{index}.mp4` 生成 `成片_1.mp4`；例如 `{date}_{folder}_{index}.mp4` 会同时带日期、目录名和序号。
 6. 点击“开始批量剪辑”。某个目录失败时队列继续；修正素材后可点击“仅重试失败任务”。已有目标文件不会被覆盖。
 7. 如果持续向总目录投放任务，可勾选“监控新增子文件夹并自动处理”。程序只处理启用监控后新建、且连续两次轮询大小与修改时间都稳定的目录。
-8. 完成后点击“打开输出文件夹”查看 MP4，或点击“下载日志”将本轮完整记录另存为 UTF-8 文本。
+8. 完成后点击“打开成品”查看 MP4，或点击“导出日志”将本轮完整记录另存为 UTF-8 文本。
 
 批量输出目录中只会放最终 MP4。逐任务封面、JSON 报告和底层日志默认保存在 `%APPDATA%\AutoVideoEditor\batch_records\`，用于排错，不属于交付文件。
 

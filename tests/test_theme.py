@@ -19,11 +19,11 @@ def _contrast(first: str, second: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
-def test_dark_editor_text_pairs_meet_wcag_normal_text_contrast():
+def test_desert_rose_editor_text_pairs_meet_wcag_normal_text_contrast():
     assert _contrast(THEME_COLORS["text"], THEME_COLORS["surface"]) >= 4.5
     assert _contrast(THEME_COLORS["text_muted"], THEME_COLORS["surface"]) >= 4.5
     assert _contrast(THEME_COLORS["text_subtle"], THEME_COLORS["surface"]) >= 4.5
-    assert _contrast("#FFFFFF", THEME_COLORS["cta"]) >= 4.5
+    assert _contrast(THEME_COLORS["header_text"], THEME_COLORS["cta"]) >= 4.5
 
 
 def test_focus_and_brand_states_have_visible_non_text_contrast():

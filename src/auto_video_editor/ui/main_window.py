@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QSize, QThread, QTimer, Qt, QUrl
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QPixmap, QResizeEvent
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QFont, QIcon, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
-    QStackedWidget,
+    QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -83,14 +83,15 @@ from ..utils.paths import config_dir, sanitize_output_filename
 from .batch_render_worker import BatchRenderWorker
 from .render_worker import RenderWorker
 from .preview_widget import PositionPreviewLabel
+from .studio_widgets import TimelineStrip
 from .video_list_widget import VideoListWidget
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("自动视频剪辑 V3.2")
-        self.resize(1080, 780)
+        self.setWindowTitle("AutoCut Studio · 自动视频剪辑 V3.3")
+        self.resize(1280, 820)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
         loaded = self._store.load()
@@ -130,75 +131,28 @@ class MainWindow(QMainWindow):
         outer = QWidget(self)
         outer.setObjectName("appRoot")
         outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(12, 12, 12, 12)
-        outer_layout.setSpacing(10)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
         outer_layout.addWidget(self._build_hero())
 
         self.config_widget = QFrame()
         self.config_widget.setObjectName("configSurface")
         workspace = QHBoxLayout(self.config_widget)
         workspace.setContentsMargins(0, 0, 0, 0)
-        workspace.setSpacing(10)
-
-        self.page_stack = QStackedWidget()
-        self.page_stack.setObjectName("pageStack")
-        self.nav_list = self._build_sidebar()
-        workspace.addWidget(self.nav_list)
-        workspace.addWidget(self.page_stack, 1)
-
-        project_page, project = self._build_page_shell(
-            "项目与素材",
-            "选择工作模式、组织素材并设置输出位置。",
-        )
-        quick_row = QHBoxLayout()
-        quick_row.setSpacing(8)
-        quick_row.addWidget(self._build_mode_group(), 1)
-        quick_row.addWidget(self._build_preset_group(), 2)
-        project.addLayout(quick_row)
-        self.batch_group = self._build_batch_group()
-        project.addWidget(self.batch_group)
-        self.video_group = self._build_video_group()
-        project.addWidget(self.video_group)
-        self.optional_group = self._build_optional_group()
-        project.addWidget(self.optional_group)
-        self.output_group = self._build_output_group()
-        project.addWidget(self.output_group)
-        project.addStretch(1)
-
-        settings_page, settings = self._build_page_shell(
-            "剪辑与效果",
-            "调整画布、转场、封面、Logo、字幕与音频处理。",
-        )
-        settings.addWidget(self._build_settings_group())
-        settings.addWidget(self._build_advanced_group())
-        settings.addStretch(1)
-
-        preview_page, preview = self._build_page_shell(
-            "画面预览",
-            "生成单帧预览并拖动主体位置，不必等待完整编码。",
-        )
-        self.preview_group = self._build_preview_group()
-        preview.addWidget(self.preview_group)
-        preview.addStretch(1)
-
-        tools_page, tools = self._build_page_shell(
-            "环境与工具",
-            "检测本地 FFmpeg、FFprobe 与可用编码能力。",
-        )
-        tools.addWidget(self._build_tools_group())
-        environment_note = QLabel(
-            "所有视频处理均在本机完成；程序不会上传素材，也不会静默下载 FFmpeg。"
-        )
-        environment_note.setObjectName("infoPanel")
-        environment_note.setWordWrap(True)
-        tools.addWidget(environment_note)
-        tools.addStretch(1)
-
-        for page in (project_page, settings_page, preview_page, tools_page):
-            self.page_stack.addWidget(page)
-        self.nav_list.currentRowChanged.connect(self._set_workspace_page)
-        self.compact_navigation.currentIndexChanged.connect(self._set_workspace_page)
-        self.nav_list.setCurrentRow(0)
+        workspace.setSpacing(0)
+        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter.setObjectName("studioSplitter")
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.library_pane = self._build_library_pane()
+        self.center_stage = self._build_studio_stage()
+        self.inspector_pane = self._build_inspector_pane()
+        self.workspace_splitter.addWidget(self.library_pane)
+        self.workspace_splitter.addWidget(self.center_stage)
+        self.workspace_splitter.addWidget(self.inspector_pane)
+        self.workspace_splitter.setStretchFactor(0, 0)
+        self.workspace_splitter.setStretchFactor(1, 1)
+        self.workspace_splitter.setStretchFactor(2, 0)
+        workspace.addWidget(self.workspace_splitter)
 
         outer_layout.addWidget(self.config_widget, 1)
         outer_layout.addWidget(self._build_run_group())
@@ -211,108 +165,250 @@ class MainWindow(QMainWindow):
 
     def _build_hero(self) -> QFrame:
         hero = QFrame()
-        hero.setObjectName("topBar")
+        hero.setObjectName("studioHeader")
+        hero.setFixedHeight(86)
         layout = QHBoxLayout(hero)
-        layout.setContentsMargins(18, 11, 16, 11)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 12, 18, 12)
+        layout.setSpacing(12)
+
+        mark = QLabel("A")
+        mark.setObjectName("brandMark")
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setFixedSize(48, 48)
+        layout.addWidget(mark)
 
         text = QVBoxLayout()
-        text.setSpacing(1)
-        title = QLabel("自动视频剪辑")
+        text.setSpacing(0)
+        title = QLabel("AutoCut Studio")
         title.setObjectName("appTitle")
-        subtitle = QLabel("本地专业工作流 · 批量处理 · 单次最终编码")
+        subtitle = QLabel("让好故事自动成片")
         subtitle.setObjectName("appSubtitle")
         text.addWidget(title)
         text.addWidget(subtitle)
-        layout.addLayout(text, 1)
+        layout.addLayout(text)
+        layout.addSpacing(28)
 
-        chips = QHBoxLayout()
-        chips.setSpacing(7)
-        self.compact_navigation = QComboBox()
-        self.compact_navigation.setObjectName("compactNavigation")
-        self.compact_navigation.addItems(("项目与素材", "剪辑与效果", "画面预览", "环境与工具"))
-        self.compact_navigation.setAccessibleName("紧凑工作区导航")
-        self.compact_navigation.setVisible(False)
-        layout.addWidget(self.compact_navigation)
-        self.status_chips: list[QLabel] = []
-        for value in ("V3.2", "2K 竖屏", "完全本地", "非 AI"):
-            chip = QLabel(value)
-            chip.setObjectName("statusChip")
-            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.status_chips.append(chip)
-            chips.addWidget(chip)
-        layout.addLayout(chips)
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("modeSwitch")
+        self.mode_combo.setAccessibleName("工作模式")
+        self.mode_combo.addItem("批量工作台", "batch")
+        self.mode_combo.addItem("手动剪辑", "manual")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addWidget(self.mode_combo)
+        layout.addStretch(1)
+
+        self.header_status = QLabel("●  FFmpeg 检测中")
+        self.header_status.setObjectName("headerStatus")
+        layout.addWidget(self.header_status)
+        self.header_log_button = QPushButton("运行日志")
+        self.header_log_button.setObjectName("headerButton")
+        self.header_log_button.clicked.connect(self._toggle_log_view)
+        layout.addWidget(self.header_log_button)
         return hero
 
-    def _set_workspace_page(self, index: int) -> None:
-        if not hasattr(self, "page_stack") or not 0 <= index < self.page_stack.count():
-            return
-        self.page_stack.setCurrentIndex(index)
-        if hasattr(self, "nav_list") and self.nav_list.currentRow() != index:
-            self.nav_list.setCurrentRow(index)
-        if self.compact_navigation.currentIndex() != index:
-            self.compact_navigation.setCurrentIndex(index)
+    def _scroll_page(self, widgets: tuple[QWidget, ...]) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setObjectName("paneScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("scrollContent")
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 10, 12, 14)
+        layout.setSpacing(9)
+        for widget in widgets:
+            layout.addWidget(widget)
+        layout.addStretch(1)
+        scroll.setWidget(content)
+        return scroll
+
+    def _build_library_pane(self) -> QFrame:
+        pane = QFrame()
+        pane.setObjectName("libraryPane")
+        pane.setMinimumWidth(235)
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(14, 14, 12, 10)
+        layout.setSpacing(8)
+
+        heading = QHBoxLayout()
+        title = QLabel("批量项目")
+        title.setObjectName("paneTitle")
+        import_button = QPushButton("导入文件夹")
+        import_button.setObjectName("clayButton")
+        import_button.clicked.connect(self._choose_batch_root)
+        heading.addWidget(title)
+        heading.addStretch(1)
+        heading.addWidget(import_button)
+        layout.addLayout(heading)
+
+        self.project_search = QLineEdit()
+        self.project_search.setPlaceholderText("搜索项目名称…")
+        self.project_search.setClearButtonEnabled(True)
+        layout.addWidget(self.project_search)
+
+        self.project_queue = QListWidget()
+        self.project_queue.setObjectName("projectQueue")
+        self.project_queue.setAccessibleName("批量项目队列")
+        self.project_queue.setIconSize(QSize(42, 48))
+        self.project_queue.setMinimumHeight(150)
+        self.project_queue.addItems((
+            "汉克斯维尔\n4 段 · 等待处理",
+            "峡谷悬池\n4 段 · 素材检查完成",
+            "山地别墅\n4 段 · 等待处理",
+            "透明泳池\n4 段 · 等待处理",
+        ))
+        for index in range(self.project_queue.count()):
+            self.project_queue.item(index).setSizeHint(QSize(190, 62))
+        self.project_queue.setCurrentRow(1)
+        self.project_search.textChanged.connect(self._filter_project_queue)
+        layout.addWidget(self.project_queue)
+
+        self.batch_group = self._build_batch_group()
+        self.batch_group.setObjectName("libraryGroup")
+        self.video_group = self._build_video_group()
+        self.video_group.setObjectName("libraryGroup")
+        left_options = QWidget()
+        left_options.setObjectName("scrollContent")
+        left_options_layout = QVBoxLayout(left_options)
+        left_options_layout.setContentsMargins(0, 0, 0, 0)
+        left_options_layout.addWidget(self.batch_group)
+        left_options_layout.addWidget(self.video_group)
+        left_options_layout.addStretch(1)
+        library_scroll = QScrollArea()
+        library_scroll.setObjectName("paneScroll")
+        library_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        library_scroll.setWidgetResizable(True)
+        library_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        library_scroll.setWidget(left_options)
+        layout.addWidget(library_scroll, 1)
+        return pane
+
+    def _build_studio_stage(self) -> QFrame:
+        stage = QFrame()
+        stage.setObjectName("centerStage")
+        stage.setMinimumWidth(300)
+        layout = QVBoxLayout(stage)
+        layout.setContentsMargins(14, 12, 14, 10)
+        layout.setSpacing(8)
+
+        stage_header = QHBoxLayout()
+        stage_title = QLabel("画面预览")
+        stage_title.setObjectName("sectionTitle")
+        self.preview_spec = QLabel("9:16 · 1440 × 2560 · 60 FPS")
+        self.preview_spec.setObjectName("mutedText")
+        stage_header.addWidget(stage_title)
+        stage_header.addStretch(1)
+        stage_header.addWidget(self.preview_spec)
+        layout.addLayout(stage_header)
+
+        preview_stage = QFrame()
+        preview_stage.setObjectName("previewStage")
+        preview_layout = QVBoxLayout(preview_stage)
+        preview_layout.setContentsMargins(12, 8, 12, 8)
+        preview_layout.setSpacing(5)
+        eyebrow = QLabel("当前画面 · 拖动预览可调整主体位置")
+        eyebrow.setObjectName("stageEyebrow")
+        preview_layout.addWidget(eyebrow)
+        self.preview_label = PositionPreviewLabel()
+        self.preview_label.setFixedSize(202, 359)
+        self.preview_label.position_changed.connect(self._on_preview_position_changed)
+        preview_layout.addWidget(self.preview_label, 1, Qt.AlignmentFlag.AlignCenter)
+        controls = QHBoxLayout()
+        self.preview_time = QLabel("00:18 / 00:58")
+        self.preview_time.setObjectName("previewTime")
+        preview_button = QPushButton("▶")
+        preview_button.setObjectName("playButton")
+        preview_button.setToolTip("生成当前选中视频的静帧预览")
+        preview_button.clicked.connect(self.generate_preview)
+        controls.addWidget(self.preview_time)
+        controls.addStretch(1)
+        controls.addWidget(preview_button)
+        controls.addStretch(1)
+        self.preview_status = QLabel("静帧预览 · 不编码完整视频")
+        self.preview_status.setObjectName("stageEyebrow")
+        self.preview_status.setMaximumWidth(220)
+        controls.addWidget(self.preview_status)
+        preview_layout.addLayout(controls)
+        layout.addWidget(preview_stage, 1)
+
+        timeline_heading = QHBoxLayout()
+        timeline_title = QLabel("剪辑时间线")
+        timeline_title.setObjectName("sectionTitle")
+        timeline_hint = QLabel("转场与音频会按最终帧数精确对齐")
+        timeline_hint.setObjectName("mutedText")
+        timeline_heading.addWidget(timeline_title)
+        timeline_heading.addStretch(1)
+        timeline_heading.addWidget(timeline_hint)
+        layout.addLayout(timeline_heading)
+        self.timeline_strip = TimelineStrip()
+        layout.addWidget(self.timeline_strip)
+        return stage
+
+    def _build_inspector_pane(self) -> QFrame:
+        pane = QFrame()
+        pane.setObjectName("inspectorPane")
+        pane.setMinimumWidth(350)
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(14, 13, 12, 8)
+        layout.setSpacing(8)
+        header = QHBoxLayout()
+        title = QLabel("导出设置")
+        title.setObjectName("paneTitle")
+        ready = QLabel("● 本地处理")
+        ready.setObjectName("readyBadge")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(ready)
+        layout.addLayout(header)
+
+        self.output_group = self._build_output_group()
+        self.settings_group = self._build_settings_group()
+        self.optional_group = self._build_optional_group()
+        self.advanced_group = self._build_advanced_group()
+        self.preset_group = self._build_preset_group()
+        self.tools_group = self._build_tools_group()
+        environment_note = QLabel("素材只在本机处理；不会上传，也不会静默下载 FFmpeg。")
+        environment_note.setObjectName("infoPanel")
+        environment_note.setWordWrap(True)
+
+        self.inspector_tabs = QTabWidget()
+        self.inspector_tabs.setObjectName("inspectorTabs")
+        self.inspector_tabs.setDocumentMode(True)
+        self.inspector_tabs.addTab(self._scroll_page((self.output_group, self.settings_group)), "基础")
+        self.inspector_tabs.addTab(self._scroll_page((self.optional_group,)), "品牌")
+        self.inspector_tabs.addTab(self._scroll_page((self.advanced_group,)), "画面")
+        self.inspector_tabs.addTab(
+            self._scroll_page((self.preset_group, self.tools_group, environment_note)), "环境"
+        )
+        layout.addWidget(self.inspector_tabs, 1)
+        return pane
+
+    def _filter_project_queue(self, text: str) -> None:
+        query = text.strip().casefold()
+        for index in range(self.project_queue.count()):
+            item = self.project_queue.item(index)
+            item.setHidden(bool(query) and query not in item.text().casefold())
 
     def _update_navigation_layout(self) -> None:
-        if not hasattr(self, "nav_list"):
+        if not hasattr(self, "workspace_splitter"):
             return
-        compact = self.width() < 1040
-        self.nav_list.setVisible(not compact)
-        self.compact_navigation.setVisible(compact)
-        for chip in self.status_chips[1:]:
-            chip.setVisible(not compact)
+        available = max(780, self.width())
+        if available < 1060:
+            self.workspace_splitter.setSizes([225, max(280, available - 565), 340])
+            self.preview_label.setFixedSize(118, 210)
+            self.header_log_button.setVisible(False)
+            self.preview_status.setVisible(False)
+        else:
+            self.workspace_splitter.setSizes([270, max(390, available - 700), 430])
+            self.preview_label.setFixedSize(202, 359)
+            self.header_log_button.setVisible(True)
+            self.preview_status.setVisible(True)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_navigation_layout()
-
-    def _build_sidebar(self) -> QListWidget:
-        navigation = QListWidget()
-        navigation.setObjectName("workspaceNavigation")
-        navigation.setFixedWidth(176)
-        navigation.setSpacing(3)
-        navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for label in ("项目与素材", "剪辑与效果", "画面预览", "环境与工具"):
-            navigation.addItem(label)
-        for index in range(navigation.count()):
-            navigation.item(index).setSizeHint(QSize(152, 42))
-        navigation.setAccessibleName("工作区导航")
-        return navigation
-
-    def _build_page_shell(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
-        scroll = QScrollArea()
-        scroll.setObjectName("workspacePage")
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        content = QWidget()
-        content.setObjectName("pageContent")
-        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(16, 12, 16, 18)
-        layout.setSpacing(10)
-        heading = QLabel(title)
-        heading.setObjectName("pageTitle")
-        description = QLabel(subtitle)
-        description.setObjectName("pageSubtitle")
-        description.setWordWrap(True)
-        layout.addWidget(heading)
-        layout.addWidget(description)
-        layout.addSpacing(2)
-        scroll.setWidget(content)
-        return scroll, layout
-
-    def _build_mode_group(self) -> QGroupBox:
-        group = QGroupBox("工作模式")
-        layout = QHBoxLayout(group)
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("批量文件夹（默认）", "batch")
-        self.mode_combo.addItem("手动单任务", "manual")
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addWidget(QLabel("模式"))
-        layout.addWidget(self.mode_combo, 1)
-        return group
 
     def _build_preset_group(self) -> QGroupBox:
         group = QGroupBox("参数预设")
@@ -333,10 +429,12 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_batch_group(self) -> QGroupBox:
-        group = QGroupBox("批量素材")
-        layout = QGridLayout(group)
+        group = QGroupBox("素材与排序")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(7)
         self.batch_root_edit = QLineEdit(self._settings.batch_input_dir)
-        browse = QPushButton("选择总文件夹…")
+        self.batch_root_edit.setPlaceholderText("包含素材子文件夹的总目录")
+        browse = QPushButton("浏览")
         browse.clicked.connect(self._choose_batch_root)
         scan = QPushButton("扫描检查")
         scan.clicked.connect(self.preview_batch)
@@ -364,19 +462,24 @@ class MainWindow(QMainWindow):
         self.watch_interval.setValue(self._settings.watch_interval_seconds)
         self.watch_checkbox.toggled.connect(self._on_watch_toggled)
         self.watch_interval.valueChanged.connect(self._restart_watch_timer)
-        layout.addWidget(QLabel("素材总目录"), 0, 0)
-        layout.addWidget(self.batch_root_edit, 0, 1)
-        layout.addWidget(browse, 0, 2)
-        layout.addWidget(scan, 0, 3)
-        layout.addWidget(QLabel("视频顺序"), 1, 0)
-        layout.addWidget(self.sort_mode_combo, 1, 1)
-        layout.addWidget(self.first_pattern_edit, 1, 2)
-        layout.addWidget(self.last_pattern_edit, 1, 3)
-        layout.addWidget(QLabel("命名模板"), 2, 0)
-        layout.addWidget(self.output_template_edit, 2, 1, 1, 3)
-        layout.addWidget(self.watch_checkbox, 3, 0, 1, 2)
-        layout.addWidget(self.watch_interval, 3, 2)
-        layout.addWidget(self.batch_status, 4, 0, 1, 4)
+        layout.addWidget(QLabel("素材总目录"))
+        layout.addWidget(self.batch_root_edit)
+        browse_row = QHBoxLayout()
+        browse_row.addWidget(browse)
+        browse_row.addWidget(scan)
+        layout.addLayout(browse_row)
+        layout.addWidget(QLabel("片段排序方式"))
+        layout.addWidget(self.sort_mode_combo)
+        layout.addWidget(QLabel("固定片头 / 片尾（可选）"))
+        layout.addWidget(self.first_pattern_edit)
+        layout.addWidget(self.last_pattern_edit)
+        layout.addWidget(QLabel("输出命名模板"))
+        layout.addWidget(self.output_template_edit)
+        watch_row = QHBoxLayout()
+        watch_row.addWidget(self.watch_checkbox, 1)
+        watch_row.addWidget(self.watch_interval)
+        layout.addLayout(watch_row)
+        layout.addWidget(self.batch_status)
         return group
 
     def _build_tools_group(self) -> QGroupBox:
@@ -404,11 +507,13 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_video_group(self) -> QGroupBox:
-        group = QGroupBox("视频素材（列表顺序就是最终剪辑顺序，可拖拽排序）")
+        group = QGroupBox("手动素材序列")
         layout = QVBoxLayout(group)
         self.video_list = VideoListWidget()
+        self.video_list.setMinimumHeight(220)
         self.video_list.files_dropped.connect(self.add_video_paths)
         self.video_list.order_changed.connect(self._update_estimate)
+        self.video_list.order_changed.connect(self._update_studio_timeline)
         self.video_list.itemSelectionChanged.connect(self._load_selected_trim)
         layout.addWidget(self.video_list)
         buttons = QHBoxLayout()
@@ -423,7 +528,7 @@ class MainWindow(QMainWindow):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
-        trim_row = QHBoxLayout()
+        trim_row = QGridLayout()
         self.trim_start = QDoubleSpinBox()
         self.trim_start.setRange(0, 36000)
         self.trim_start.setDecimals(3)
@@ -436,28 +541,41 @@ class MainWindow(QMainWindow):
         reset_trim = QPushButton("恢复完整时长")
         apply_trim.clicked.connect(self._apply_selected_trim)
         reset_trim.clicked.connect(self._reset_selected_trim)
-        trim_row.addWidget(QLabel("裁剪开始"))
-        trim_row.addWidget(self.trim_start)
-        trim_row.addWidget(QLabel("裁剪结束"))
-        trim_row.addWidget(self.trim_end)
-        trim_row.addWidget(apply_trim)
-        trim_row.addWidget(reset_trim)
+        trim_row.addWidget(QLabel("裁剪开始"), 0, 0)
+        trim_row.addWidget(self.trim_start, 0, 1)
+        trim_row.addWidget(QLabel("裁剪结束"), 1, 0)
+        trim_row.addWidget(self.trim_end, 1, 1)
+        trim_row.addWidget(apply_trim, 2, 0, 1, 2)
+        trim_row.addWidget(reset_trim, 3, 0, 1, 2)
         layout.addLayout(trim_row)
         return group
 
+    def _update_studio_timeline(self) -> None:
+        if not hasattr(self, "timeline_strip"):
+            return
+        items = self.video_list.video_items()
+        labels = [item.display_name.rsplit(".", 1)[0] for item in items]
+        if labels:
+            self.timeline_strip.set_clips(labels)
+            self.task_project_label.setText(f"手动项目 · {len(labels)} 段素材")
+
     def _build_optional_group(self) -> QGroupBox:
-        group = QGroupBox("封面、Logo、字幕与配乐")
-        layout = QGridLayout(group)
+        group = QGroupBox("品牌与媒体")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
         self.cover_edit = QLineEdit()
         self.cover_edit.setReadOnly(True)
+        self.cover_edit.setPlaceholderText("未选择封面")
         self.cover_preview = QLabel("无封面")
         self.cover_preview.setObjectName("coverPreview")
         self.cover_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cover_preview.setFixedSize(90, 120)
+        self.cover_preview.setFixedSize(72, 96)
         self.subtitle_edit = QLineEdit()
         self.subtitle_edit.setReadOnly(True)
+        self.subtitle_edit.setPlaceholderText("未选择字幕")
         self.logo_edit = QLineEdit()
         self.logo_edit.setReadOnly(True)
+        self.logo_edit.setPlaceholderText("未选择 Logo")
         self.logo_scale = QSpinBox()
         self.logo_scale.setRange(10, 300)
         self.logo_scale.setSingleStep(10)
@@ -470,6 +588,7 @@ class MainWindow(QMainWindow):
         self.logo_opacity.setValue(self._settings.logo_opacity_percent)
         self.music_edit = QLineEdit()
         self.music_edit.setReadOnly(True)
+        self.music_edit.setPlaceholderText("未选择背景音乐")
         self.music_info = QLabel("无配乐")
         self.music_info.setObjectName("mutedText")
         cover_button = QPushButton("选择封面…")
@@ -493,30 +612,50 @@ class MainWindow(QMainWindow):
         cover_label = QLabel("封面图片")
         subtitle_label = QLabel("字幕（SRT/ASS）")
         music_label = QLabel("背景音乐")
-        layout.addWidget(cover_label, 0, 0)
-        layout.addWidget(self.cover_edit, 0, 1)
-        layout.addWidget(cover_button, 0, 2)
-        layout.addWidget(clear_cover, 0, 3)
-        layout.addWidget(self.cover_preview, 0, 4, 6, 1)
-        layout.addWidget(QLabel("移动 Logo（图片）"), 1, 0)
-        layout.addWidget(self.logo_edit, 1, 1)
-        layout.addWidget(logo_button, 1, 2)
-        layout.addWidget(clear_logo, 1, 3)
-        layout.addWidget(QLabel("Logo 缩放"), 2, 0)
-        layout.addWidget(self.logo_scale, 2, 1)
-        layout.addWidget(QLabel("100% = 默认最大 240×240"), 2, 2, 1, 2)
-        layout.addWidget(QLabel("Logo 透明度"), 3, 0)
-        layout.addWidget(self.logo_opacity, 3, 1)
-        layout.addWidget(QLabel("0% = 完全透明，100% = 不透明"), 3, 2, 1, 2)
-        layout.addWidget(subtitle_label, 4, 0)
-        layout.addWidget(self.subtitle_edit, 4, 1)
-        layout.addWidget(subtitle_button, 4, 2)
-        layout.addWidget(clear_subtitle, 4, 3)
-        layout.addWidget(music_label, 5, 0)
-        layout.addWidget(self.music_edit, 5, 1)
-        layout.addWidget(music_button, 5, 2)
-        layout.addWidget(clear_music, 5, 3)
-        layout.addWidget(self.music_info, 6, 1, 1, 3)
+
+        cover_block = QHBoxLayout()
+        cover_fields = QVBoxLayout()
+        cover_fields.addWidget(cover_label)
+        cover_fields.addWidget(self.cover_edit)
+        cover_buttons = QHBoxLayout()
+        cover_buttons.addWidget(cover_button)
+        cover_buttons.addWidget(clear_cover)
+        cover_buttons.addStretch(1)
+        cover_fields.addLayout(cover_buttons)
+        cover_block.addLayout(cover_fields, 1)
+        cover_block.addWidget(self.cover_preview)
+        layout.addLayout(cover_block)
+
+        layout.addWidget(QLabel("移动 Logo（图片）"))
+        layout.addWidget(self.logo_edit)
+        logo_buttons = QHBoxLayout()
+        logo_buttons.addWidget(logo_button)
+        logo_buttons.addWidget(clear_logo)
+        logo_buttons.addStretch(1)
+        layout.addLayout(logo_buttons)
+        logo_style = QGridLayout()
+        logo_style.addWidget(QLabel("缩放"), 0, 0)
+        logo_style.addWidget(self.logo_scale, 0, 1)
+        logo_style.addWidget(QLabel("透明度"), 1, 0)
+        logo_style.addWidget(self.logo_opacity, 1, 1)
+        layout.addLayout(logo_style)
+
+        layout.addWidget(subtitle_label)
+        layout.addWidget(self.subtitle_edit)
+        subtitle_buttons = QHBoxLayout()
+        subtitle_buttons.addWidget(subtitle_button)
+        subtitle_buttons.addWidget(clear_subtitle)
+        subtitle_buttons.addStretch(1)
+        layout.addLayout(subtitle_buttons)
+
+        layout.addWidget(music_label)
+        layout.addWidget(self.music_edit)
+        music_buttons = QHBoxLayout()
+        music_buttons.addWidget(music_button)
+        music_buttons.addWidget(clear_music)
+        music_buttons.addStretch(1)
+        layout.addLayout(music_buttons)
+        layout.addWidget(self.music_info)
         self.manual_asset_widgets = (
             cover_label,
             self.cover_edit,
@@ -596,32 +735,42 @@ class MainWindow(QMainWindow):
         self.primary_color_button.clicked.connect(lambda: self._choose_color(True))
         self.outline_color_button.clicked.connect(lambda: self._choose_color(False))
 
-        layout.addWidget(QLabel("固定输出"), 0, 0)
-        layout.addWidget(QLabel("1440×2560 / 9:16 / 60FPS；转场和封面时长可在高级设置调整"), 0, 1, 1, 3)
+        spec = QLabel("1440 × 2560  ·  9:16  ·  60 FPS  ·  H.264")
+        spec.setObjectName("infoPanel")
+        spec.setWordWrap(True)
+        layout.addWidget(spec, 0, 0, 1, 2)
         layout.addWidget(QLabel("帧率转换"), 1, 0)
         layout.addWidget(self.interpolation_combo, 1, 1)
-        layout.addWidget(QLabel("原声"), 1, 2)
-        layout.addWidget(self.source_audio_combo, 1, 3)
-        layout.addWidget(QLabel("音乐不足"), 2, 0)
-        layout.addWidget(self.music_policy_combo, 2, 1)
-        layout.addWidget(QLabel("编码器"), 2, 2)
-        layout.addWidget(self.encoder_combo, 2, 3)
-        layout.addWidget(QLabel("导出质量"), 3, 0)
-        layout.addWidget(self.quality_combo, 3, 1, 1, 3)
-        layout.addWidget(QLabel("配乐音量"), 4, 0)
-        layout.addWidget(volume_widget, 4, 1)
-        layout.addWidget(self.mirror_second_clip, 4, 2, 1, 2)
-        layout.addWidget(self.subtitle_enabled, 5, 0)
-        layout.addWidget(QLabel("字幕字体"), 5, 1)
-        layout.addWidget(self.font_combo, 5, 2, 1, 2)
-        layout.addWidget(QLabel("字幕字号"), 6, 0)
-        layout.addWidget(self.font_size, 6, 1)
-        layout.addWidget(QLabel("描边宽度"), 6, 2)
-        layout.addWidget(self.outline_width, 6, 3)
-        layout.addWidget(QLabel("底部边距"), 7, 0)
-        layout.addWidget(self.subtitle_margin, 7, 1)
-        layout.addWidget(self.primary_color_button, 7, 2)
-        layout.addWidget(self.outline_color_button, 7, 3)
+        layout.addWidget(QLabel("原声处理"), 2, 0)
+        layout.addWidget(self.source_audio_combo, 2, 1)
+        layout.addWidget(QLabel("音乐不足"), 3, 0)
+        layout.addWidget(self.music_policy_combo, 3, 1)
+        layout.addWidget(QLabel("编码器"), 4, 0)
+        layout.addWidget(self.encoder_combo, 4, 1)
+        layout.addWidget(QLabel("导出质量"), 5, 0)
+        layout.addWidget(self.quality_combo, 5, 1)
+        layout.addWidget(QLabel("配乐音量"), 6, 0)
+        layout.addWidget(volume_widget, 6, 1)
+        layout.addWidget(self.mirror_second_clip, 7, 0, 1, 2)
+        layout.addWidget(self.subtitle_enabled, 8, 0, 1, 2)
+        layout.addWidget(QLabel("字幕字体"), 9, 0)
+        layout.addWidget(self.font_combo, 9, 1)
+        layout.addWidget(QLabel("字号 / 描边"), 10, 0)
+        subtitle_size_row = QHBoxLayout()
+        subtitle_size_row.addWidget(self.font_size)
+        subtitle_size_row.addWidget(self.outline_width)
+        subtitle_size_widget = QWidget()
+        subtitle_size_widget.setLayout(subtitle_size_row)
+        layout.addWidget(subtitle_size_widget, 10, 1)
+        layout.addWidget(QLabel("底部边距"), 11, 0)
+        layout.addWidget(self.subtitle_margin, 11, 1)
+        color_row = QHBoxLayout()
+        color_row.addWidget(self.primary_color_button)
+        color_row.addWidget(self.outline_color_button)
+        color_widget = QWidget()
+        color_widget.setLayout(color_row)
+        layout.addWidget(QLabel("字幕颜色"), 12, 0)
+        layout.addWidget(color_widget, 12, 1)
         self.quality_combo.currentIndexChanged.connect(self._update_estimate)
         self.subtitle_enabled.toggled.connect(self._update_subtitle_preview)
         self.font_combo.currentFontChanged.connect(self._update_subtitle_preview)
@@ -841,24 +990,6 @@ class MainWindow(QMainWindow):
         self._update_subtitle_preview()
         return group
 
-    def _build_preview_group(self) -> QGroupBox:
-        group = QGroupBox("画面位置与效果预览（手动模式）")
-        layout = QHBoxLayout(group)
-        self.preview_label = PositionPreviewLabel()
-        self.preview_label.position_changed.connect(self._on_preview_position_changed)
-        side = QVBoxLayout()
-        preview_button = QPushButton("生成当前选中视频预览")
-        preview_button.clicked.connect(self.generate_preview)
-        self.preview_status = QLabel("预览只生成一张静帧，不会编码完整视频。")
-        self.preview_status.setObjectName("mutedText")
-        self.preview_status.setWordWrap(True)
-        side.addWidget(preview_button)
-        side.addWidget(self.preview_status)
-        side.addStretch(1)
-        layout.addWidget(self.preview_label)
-        layout.addLayout(side, 1)
-        return group
-
     def _build_output_group(self) -> QGroupBox:
         group = QGroupBox("输出")
         layout = QGridLayout(group)
@@ -883,19 +1014,37 @@ class MainWindow(QMainWindow):
         group.setObjectName("actionPanel")
         group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(group)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(8)
-        buttons = QHBoxLayout()
-        task_heading = QLabel("任务控制")
-        task_heading.setObjectName("sectionTitle")
+        layout.setContentsMargins(14, 9, 14, 10)
+        layout.setSpacing(7)
+        task_row = QHBoxLayout()
+        task_row.setSpacing(10)
+
+        status_stack = QVBoxLayout()
+        status_stack.setSpacing(2)
+        self.task_project_label = QLabel("峡谷悬池 · 素材检查完成")
+        self.task_project_label.setObjectName("sectionTitle")
+        self.stage_label = QLabel("就绪")
+        self.stage_label.setObjectName("stageLabel")
+        status_stack.addWidget(self.task_project_label)
+        status_stack.addWidget(self.stage_label)
+        task_row.addLayout(status_stack)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMinimumWidth(180)
+        task_row.addWidget(self.progress_bar, 1)
+
+        self.open_button = QPushButton("打开成品")
+        self.download_log_button = QPushButton("导出日志")
+        self.toggle_log_button = QPushButton("运行日志⌄")
+        self.retry_button = QPushButton("重试失败")
+        for button in (self.open_button, self.download_log_button, self.toggle_log_button, self.retry_button):
+            button.setObjectName("quietButton")
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("dangerButton")
         self.start_button = QPushButton("开始剪辑")
         self.start_button.setObjectName("primaryButton")
-        self.cancel_button = QPushButton("取消任务")
-        self.cancel_button.setObjectName("dangerButton")
-        self.open_button = QPushButton("打开输出文件夹")
-        self.download_log_button = QPushButton("下载日志…")
-        self.toggle_log_button = QPushButton("隐藏日志")
-        self.retry_button = QPushButton("仅重试失败任务")
         self.cancel_button.setEnabled(False)
         self.open_button.setEnabled(False)
         self.download_log_button.setEnabled(False)
@@ -906,35 +1055,27 @@ class MainWindow(QMainWindow):
         self.download_log_button.clicked.connect(self.download_logs)
         self.toggle_log_button.clicked.connect(self._toggle_log_view)
         self.retry_button.clicked.connect(self.retry_failed_tasks)
-        buttons.addWidget(task_heading)
-        buttons.addSpacing(6)
-        buttons.addWidget(self.start_button)
-        buttons.addWidget(self.cancel_button)
-        buttons.addWidget(self.open_button)
-        buttons.addWidget(self.download_log_button)
-        buttons.addWidget(self.toggle_log_button)
-        buttons.addWidget(self.retry_button)
-        buttons.addStretch(1)
-        self.stage_label = QLabel("就绪")
-        self.stage_label.setObjectName("stageLabel")
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setTextVisible(False)
+        task_row.addWidget(self.open_button)
+        task_row.addWidget(self.download_log_button)
+        task_row.addWidget(self.toggle_log_button)
+        task_row.addWidget(self.retry_button)
+        task_row.addWidget(self.cancel_button)
+        task_row.addWidget(self.start_button)
+
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         # Keep the whole current run so “下载日志” never exports a truncated view.
         self.log_view.setMaximumBlockCount(0)
         self.log_view.setFixedHeight(92)
-        layout.addLayout(buttons)
-        layout.addWidget(self.stage_label)
-        layout.addWidget(self.progress_bar)
+        self.log_view.setVisible(False)
+        layout.addLayout(task_row)
         layout.addWidget(self.log_view)
         return group
 
     def _toggle_log_view(self) -> None:
         visible = not self.log_view.isVisible()
         self.log_view.setVisible(visible)
-        self.toggle_log_button.setText("隐藏日志" if visible else "显示日志")
+        self.toggle_log_button.setText("运行日志⌃" if visible else "运行日志⌄")
 
     def _on_mode_changed(self, *_args: object) -> None:
         if not hasattr(self, "batch_group"):
@@ -951,25 +1092,24 @@ class MainWindow(QMainWindow):
         for widget in self.manual_asset_widgets:
             widget.setVisible(not batch)
         self.optional_group.setTitle("批量任务统一 Logo" if batch else "封面、Logo、字幕与配乐")
-        if hasattr(self, "preview_group"):
-            self.preview_group.setVisible(not batch)
-        if hasattr(self, "nav_list"):
-            preview_item = self.nav_list.item(2)
-            preview_item.setHidden(batch)
-            compact_preview = self.compact_navigation.model().item(2)
-            if compact_preview is not None:
-                compact_preview.setEnabled(not batch)
-            if batch and self.nav_list.currentRow() == 2:
-                self.nav_list.setCurrentRow(0)
         self.output_name_label.setText("文件名前缀" if batch else "文件名")
         self.filename_edit.setText(self._batch_prefix if batch else self._manual_filename)
         self.start_button.setText("开始批量剪辑" if batch else "开始剪辑")
+        self.task_project_label.setText(
+            "批量队列 · 等待素材检查" if batch else "手动项目 · 等待添加视频"
+        )
+        self.project_queue.setVisible(batch)
+        self.project_search.setVisible(batch)
         if batch:
             self.estimate_label.setText(
                 "批量输出使用命名模板；可用 {prefix}、{folder}、{index}、{date}。"
             )
+            self.timeline_strip.set_clips(["岩壁", "结构", "吊装", "成品"])
         else:
             self._update_estimate()
+            self.timeline_strip.set_clips(
+                [item.display_name.rsplit(".", 1)[0] for item in self.video_list.video_items()]
+            )
         self._active_mode = mode
 
     def _choose_batch_root(self) -> None:
@@ -994,6 +1134,38 @@ class MainWindow(QMainWindow):
             first_pattern=self.first_pattern_edit.text().strip(),
             last_pattern=self.last_pattern_edit.text().strip(),
         )
+        self.project_queue.clear()
+        for source in scan.sources:
+            self.project_queue.addItem(
+                f"{source.source_dir.name}\n{len(source.video_paths)} 段 · 素材检查完成"
+            )
+            # QListWidget.addItem returns None; configure the inserted item.
+            queue_item = self.project_queue.item(self.project_queue.count() - 1)
+            queue_item.setSizeHint(QSize(190, 56))
+            queue_item.setToolTip(str(source.source_dir))
+            if source.cover_path.is_file():
+                queue_item.setIcon(QIcon(str(source.cover_path)))
+        for issue in scan.issues:
+            self.project_queue.addItem(f"{issue.source_dir.name}\n素材不完整 · 请检查")
+            queue_item = self.project_queue.item(self.project_queue.count() - 1)
+            queue_item.setSizeHint(QSize(190, 54))
+            queue_item.setToolTip(issue.message)
+        if self.project_queue.count():
+            self.project_queue.setCurrentRow(0)
+        if scan.sources:
+            first_source = scan.sources[0]
+            self.timeline_strip.set_clips([path.stem for path in first_source.video_paths])
+            self.task_project_label.setText(
+                f"{first_source.source_dir.name} · {len(first_source.video_paths)} 段素材已就绪"
+            )
+            cover = QPixmap(str(first_source.cover_path))
+            if not cover.isNull():
+                self.preview_label.setPixmap(
+                    cover.scaled(
+                        self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
         message = f"可处理 {len(scan.sources)} 个子文件夹；不合格 {len(scan.issues)} 个。"
         if scan.sources:
             first = scan.sources[0]
@@ -1025,6 +1197,7 @@ class MainWindow(QMainWindow):
             state = "全部必需能力可用" if capabilities.ready else f"缺少：{', '.join(capabilities.missing_required)}"
             gpu = "NVENC 实测可用" if capabilities.nvenc_usable else "NVENC 实测不可用，将回退 x264"
             self.tool_status.setText(f"{state}；{gpu}\n{capabilities.ffmpeg_version}")
+            self.header_status.setText("●  FFmpeg 就绪" if capabilities.ready else "●  FFmpeg 缺少组件")
             self.ffmpeg_edit.setText(str(capabilities.ffmpeg_path))
             self.ffprobe_edit.setText(str(capabilities.ffprobe_path))
             self._settings = replace(
@@ -1039,6 +1212,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._capabilities = None
             self.tool_status.setText(f"检测失败：{exc}")
+            self.header_status.setText("●  FFmpeg 未就绪")
         finally:
             self.detect_button.setEnabled(True)
 
@@ -1355,18 +1529,20 @@ class MainWindow(QMainWindow):
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
-            self.preview_status.setText("预览已更新；拖动画面可设置自定义位置，再次点击即可刷新。")
+            self.preview_status.setText("预览已更新 · 可拖动调整")
         else:
             detail = ""
             if self._preview_process:
                 detail = bytes(self._preview_process.readAllStandardError()).decode("utf-8", "replace")[-500:]
-            self.preview_status.setText(f"预览生成失败：{detail or '请查看 FFmpeg 配置'}")
+            message = detail or "请查看 FFmpeg 配置"
+            self.preview_status.setText("预览失败 · 查看运行日志")
+            self.preview_status.setToolTip(message)
 
     def _on_preview_position_changed(self, x: int, y: int) -> None:
         self._select_combo(self.canvas_position_combo, CanvasPosition.CUSTOM.value)
         self.canvas_x.setValue(x)
         self.canvas_y.setValue(y)
-        self.preview_status.setText(f"自定义位置：X={x}%、Y={y}%；点击“生成预览”刷新。")
+        self.preview_status.setText(f"位置 X={x}% · Y={y}%")
 
     def _on_watch_toggled(self, checked: bool) -> None:
         if not hasattr(self, "_watch_timer"):
@@ -1784,6 +1960,7 @@ class MainWindow(QMainWindow):
     def _on_progress(self, stage: str, value: int) -> None:
         self.stage_label.setText(stage)
         self.progress_bar.setValue(min(value, 99) if value < 100 else 100)
+        self.timeline_strip.set_progress(value)
 
     def _on_success(self, result: RenderResult) -> None:
         self._last_result = result

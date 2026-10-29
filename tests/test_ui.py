@@ -57,12 +57,14 @@ def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypat
     assert window.start_button.objectName() == "primaryButton"
     assert window.config_widget.objectName() == "configSurface"
     assert window.log_view.height() == 92
-    assert window.page_stack.count() == 4
-    assert window.nav_list.count() == 4
-    assert window.nav_list.accessibleName() == "工作区导航"
-    assert window.compact_navigation.accessibleName() == "紧凑工作区导航"
-    assert window.nav_list.item(2).isHidden()
-    assert THEME_COLORS["background"] == "#0B1120"
+    assert window.log_view.isHidden()
+    assert window.inspector_tabs.count() == 4
+    assert window.project_queue.accessibleName() == "批量项目队列"
+    assert window.timeline_strip.accessibleName() == "视频与音频时间线"
+    assert window.mode_combo.accessibleName() == "工作模式"
+    assert window.video_group.isHidden()
+    assert THEME_COLORS["background"] == "#E8D5C4"
+    assert THEME_COLORS["cta"] == "#5D2E46"
     assert "qlineargradient" not in APP_STYLESHEET
     window._select_combo(window.transition_type_combo, TransitionType.WIPE_LEFT.value)
     window.transition_seconds.setValue(0.5)
@@ -83,26 +85,47 @@ def test_main_window_advanced_controls_build_render_settings(tmp_path, monkeypat
     assert settings.cover_title == "结构安全"
     assert settings.subtitle_style.highlight_words == ("安全", "结构")
     window._select_combo(window.mode_combo, "manual")
-    assert not window.nav_list.item(2).isHidden()
-    window.nav_list.setCurrentRow(1)
-    assert window.page_stack.currentIndex() == 1
-    assert window.compact_navigation.currentIndex() == 1
+    assert not window.video_group.isHidden()
+    assert window.batch_group.isHidden()
+    assert window.project_queue.isHidden()
     window.resize(900, 650)
     window.show()
     app.processEvents()
-    assert window.nav_list.isHidden()
-    assert window.compact_navigation.isVisible()
-    for index in (0, 1, 3):
-        window.compact_navigation.setCurrentIndex(index)
+    assert window.preview_label.size().width() == 118
+    assert window.header_log_button.isHidden()
+    for index in range(window.inspector_tabs.count()):
+        window.inspector_tabs.setCurrentIndex(index)
         app.processEvents()
-        assert window.page_stack.currentWidget().horizontalScrollBar().maximum() == 0
-    window.resize(1180, 820)
+        assert window.inspector_tabs.currentWidget().horizontalScrollBar().maximum() == 0
+    window.resize(1280, 820)
     app.processEvents()
-    assert window.nav_list.isVisible()
-    assert window.compact_navigation.isHidden()
+    assert window.preview_label.size().width() == 202
+    assert window.header_log_button.isVisible()
     window.toggle_log_button.click()
-    assert window.log_view.isHidden()
-    assert window.toggle_log_button.text() == "显示日志"
+    assert window.log_view.isVisible()
+    assert window.toggle_log_button.text() == "运行日志⌃"
+    window.close()
+    app.processEvents()
+
+
+def test_batch_scan_populates_desert_rose_project_queue_and_timeline(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
+    source = tmp_path / "批量素材" / "峡谷悬池"
+    source.mkdir(parents=True)
+    for name in ("1岩壁.mp4", "2吊装.mp4", "封面.png", "字幕.srt", "音乐.mp3"):
+        (source / name).touch()
+
+    window = MainWindow()
+    window.batch_root_edit.setText(str(source.parent))
+    window.preview_batch()
+
+    assert window.project_queue.count() == 1
+    assert "峡谷悬池" in window.project_queue.item(0).text()
+    assert "2 段" in window.project_queue.item(0).text()
+    assert window.timeline_strip.clip_labels == ("1岩壁", "2吊装")
+    assert window.task_project_label.text() == "峡谷悬池 · 2 段素材已就绪"
     window.close()
     app.processEvents()
 

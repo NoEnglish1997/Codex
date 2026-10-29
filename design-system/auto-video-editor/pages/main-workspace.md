@@ -1,52 +1,59 @@
-# Main Workspace — PySide6 Desktop Override
+# Main Workspace — Desert Rose Cinematic Atelier
 
-> **Project:** Auto Video Editor
-> **Source:** UI UX Pro Max exact product match “Short Video Editor” plus WPF overflow guidance
-> **Design dials:** variance 5/10, motion 2/10, density 8/10
+> **Project:** AutoCut Studio
+> **Sources:** Anthropic `frontend-design` and `theme-factory` Skills
+> **Selected theme:** Desert Rose
+> **Platform:** Native Windows / PySide6
 
-This page override takes precedence over `../MASTER.md`. The generated master is
-kept as the project-wide search result; the rules below adapt the verified product
-match to a native Windows/PySide6 editor rather than a marketing page.
+This page override supersedes the older dark OLED workspace and the generated
+web-oriented master file. It is the approved visual direction for V3.3.
 
 ## Visual direction
 
-- Style: Dark Mode (OLED), flat and technical; no decorative gradients or shadows.
-- Background `#0B1120`; surface `#141C2E`; raised surface `#192134`.
-- Primary editing/focus color `#EC4899`; sole primary CTA color `#2563EB`.
-- Primary text `#F8FAFC`; secondary text `#A7B2C5`; border `#2A354A`.
-- Destructive actions use red plus an explicit text label; status never relies on
-  color alone.
-- Use local Windows fonts only: Segoe UI Variable with Microsoft YaHei UI fallback.
+- Editorial creative studio rather than a generic dashboard or settings form.
+- Deep burgundy `#5D2E46` establishes the application chrome and primary action.
+- Clay `#B87D6D` marks active media, timeline progress and secondary actions.
+- Sand `#E8D5C4`, warm porcelain `#FAF7F4` and white create the working surfaces.
+- Dusty rose `#D4A5A5` is reserved for selection/focus context; sage `#33725C`
+  communicates ready/success with an accompanying text label.
+- UI text uses local Segoe UI Variable / Microsoft YaHei UI fallbacks. No online
+  font or runtime design dependency is introduced.
 
 ## Information architecture
 
-1. Compact top application bar for identity and persistent capability chips.
-2. Adaptive desktop sidebar for four destinations: project, editing, preview,
-   environment.
-3. One independently scrollable content page; never nest a second content scroll
-   region inside it.
-4. Fixed task controller below the workspace with one blue primary action, explicit
-   cancel/retry actions, progress, stage text and a collapsible diagnostic log.
-5. The preview destination is unavailable in batch mode and visible in manual mode.
+```text
+┌ deep-burgundy app header · brand · mode · local environment ┐
+├ project library ┬ cinematic preview stage ┬ export inspector ┤
+│ batch queue     │ 9:16 preview            │ base / brand /   │
+│ source controls│ playback + timeline      │ visual / tools   │
+├─────────────────┴─────────────────────────┴──────────────────┤
+│ current task · progress · logs · cancel · primary render     │
+└──────────────────────────────────────────────────────────────┘
+```
 
-## Components and spacing
+- The preview stage and frame-accurate video/audio timeline are the single bold
+  visual idea; surrounding panels remain quiet and utilitarian.
+- Batch mode uses the left project queue; manual mode exposes the sortable source
+  list in the same place without changing the overall workspace.
+- The inspector groups the long settings model into independently scrollable tabs.
+- The fixed task bar never overlaps pane content and keeps cancellation visible.
 
-- Dense 4/8 px rhythm: 8 px control gaps, 12–16 px panel padding, 10–12 px section gaps.
-- Corner radius: 6 px controls, 8–9 px panels; no random elevation scale.
-- Visible labels remain next to every field; placeholders are examples, not labels.
-- Focus uses a 2 px pink ring; disabled controls keep readable labels but lower
-  emphasis.
-- Native checkbox glyphs are retained so checked state is not communicated by color
-  alone.
-- Drag operations retain visible button alternatives (move up/down and numeric
-  positioning).
+## Component rules
 
-## Interaction and accessibility
+- Use the 8 px rhythm; 12–14 px pane margins; 7–11 px radii based on hierarchy.
+- Prefer tonal grouping and sparse separators to nested cards.
+- Keep one solid burgundy primary action. Clay is never used for a competing CTA.
+- The preview uses a 9:16 surface and shrinks at the 900×650 minimum window.
+- Inputs always retain visible labels; placeholders only provide examples.
+- Drag-and-drop ordering retains add/delete/up/down keyboard alternatives.
+- Focus uses a 2 px plum ring. Status is never communicated by color alone.
 
-- Sidebar is keyboard navigable and reading order matches its visual order.
-- The task process always exposes stage text and determinate progress when available.
-- Long forms use a scroll area so keyboard focus cannot be clipped by the fixed task
-  controller.
-- No autoplay, decorative motion, emoji icons or network-loaded fonts/assets.
-- Heavy FFmpeg work remains outside the UI thread; disabled states prevent duplicate
-  task submission.
+## Accessibility and behavior
+
+- Normal text pairs meet WCAG 2.1 AA contrast; focus and brand boundaries meet
+  3:1 non-text contrast.
+- All long panes scroll vertically with horizontal scrolling disabled.
+- Native checkbox indicators, keyboard focus and readable disabled states remain.
+- The custom timeline is presentation-only; the source list continues to be the
+  authoritative order and FFmpeg work remains outside the UI thread.
+- No decorative animation, autoplay, network asset loading or online API.
