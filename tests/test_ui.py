@@ -164,6 +164,7 @@ def test_manual_timeline_controls_real_source_order_trim_seek_and_transition(tmp
 def test_manual_editor_split_undo_redo_delete_and_autosave(tmp_path, monkeypatch):
     app = _app()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
     monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
     window = MainWindow()
     window._select_combo(window.mode_combo, "manual")
