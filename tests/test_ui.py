@@ -11,6 +11,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from auto_video_editor.models import CanvasMode, InterpolationMode, OutputQuality, TransitionType
@@ -130,6 +131,35 @@ def test_batch_scan_populates_desert_rose_project_queue_and_timeline(tmp_path, m
     app.processEvents()
 
 
+def test_manual_timeline_controls_real_source_order_trim_seek_and_transition(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(MainWindow, "detect_tools", lambda self: None)
+    window = MainWindow()
+    window._select_combo(window.mode_combo, "manual")
+    for name in ("第一段.mp4", "第二段.mp4", "第三段.mp4"):
+        window.video_list.add_video(_item(name))
+
+    window.timeline_strip.reorder_requested.emit(0, 2)
+    assert [item.display_name for item in window.video_list.video_items()] == [
+        "第二段.mp4", "第三段.mp4", "第一段.mp4",
+    ]
+    window.timeline_strip.trim_requested.emit(0, 0.5, 2.5)
+    assert window.video_list.video_items()[0].trim_start_seconds == 0.5
+    assert window.video_list.video_items()[0].trim_end_seconds == 2.5
+
+    window.timeline_strip.seek_requested.emit(1, 1.25)
+    assert window.video_list.current_video_index() == 1
+    assert window._preview_seek_seconds == 1.25
+    assert window.preview_time.text() == "00:01.250"
+
+    window.timeline_strip.transition_requested.emit(0)
+    assert window.inspector_tabs.currentIndex() == 2
+    assert window.advanced_tabs.currentIndex() == 1
+    window.close()
+    app.processEvents()
+
+
 def _load_media_factory():
     path = Path(__file__).parents[1] / "scripts" / "create_test_media.py"
     spec = importlib.util.spec_from_file_location("create_test_media_for_ui", path)
@@ -195,5 +225,42 @@ def test_gui_batch_render_continues_after_invalid_folder_and_downloads_log(tmp_p
     window.download_log_button.click()
     assert log_path.read_text(encoding="utf-8-sig").endswith("\n")
     assert "批量完成" in log_path.read_text(encoding="utf-8-sig")
+    window.close()
+    app.processEvents()
+
+
+@pytest.mark.integration
+def test_manual_timeline_seek_generates_the_requested_ffmpeg_still(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Ok)
+    window = MainWindow()
+    if not window._capabilities or not window._capabilities.ready:
+        window.close()
+        pytest.skip("FFmpeg is not available to the GUI")
+    media = _load_media_factory()(
+        tmp_path / "timeline-media", str(window._capabilities.ffmpeg_path), duration=2.1
+    )
+    window._select_combo(window.mode_combo, "manual")
+    window.add_video_paths([media["landscape"]])
+    window._on_timeline_seek(0, 1.0)
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        app.processEvents()
+        process_running = (
+            window._preview_process is not None
+            and window._preview_process.state() != QProcess.ProcessState.NotRunning
+        )
+        if not window._timeline_preview_timer.isActive() and not process_running:
+            break
+        time.sleep(0.01)
+
+    assert window._preview_path.is_file()
+    assert window.preview_label.pixmap() is not None
+    assert not window.preview_label.pixmap().isNull()
+    assert window.preview_time.text().startswith("00:01.000 / ")
+    assert window.timeline_strip.selected_index == 0
     window.close()
     app.processEvents()

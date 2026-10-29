@@ -31,6 +31,14 @@ class VideoListWidget(QTreeWidget):
         for column in range(1, 6):
             self.header().setSectionResizeMode(column, self.header().ResizeMode.ResizeToContents)
 
+    def set_compact_view(self, enabled: bool) -> None:
+        """Use a filename/duration view when hosted in the narrow studio library."""
+        for column in range(2, 6):
+            self.setColumnHidden(column, enabled)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff if enabled else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
     def add_video(self, video: VideoItem) -> None:
         probe = video.probe
         duration = f"{probe.duration_seconds:.2f}s" if probe else "未读取"
@@ -40,7 +48,11 @@ class VideoListWidget(QTreeWidget):
         trim = self._trim_text(video)
         item = QTreeWidgetItem([video.display_name, duration, resolution, frame_rate, audio, trim])
         item.setData(0, Qt.ItemDataRole.UserRole, video)
-        item.setToolTip(0, str(video.source_path))
+        item.setToolTip(
+            0,
+            f"{video.source_path}\n时长：{duration}\n分辨率：{resolution}\n"
+            f"FPS：{frame_rate}\n音轨：{audio}\n裁剪：{trim}",
+        )
         self.addTopLevelItem(item)
         self.order_changed.emit()
 
@@ -53,6 +65,42 @@ class VideoListWidget(QTreeWidget):
     def current_video(self) -> VideoItem | None:
         item = self.currentItem()
         return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+
+    def current_video_index(self) -> int:
+        item = self.currentItem()
+        return self.indexOfTopLevelItem(item) if item is not None else -1
+
+    def select_row(self, row: int) -> None:
+        if 0 <= row < self.topLevelItemCount():
+            self.setCurrentItem(self.topLevelItem(row))
+
+    def move_row(self, source: int, target: int) -> bool:
+        if (
+            source == target
+            or not 0 <= source < self.topLevelItemCount()
+            or not 0 <= target < self.topLevelItemCount()
+        ):
+            return False
+        item = self.takeTopLevelItem(source)
+        self.insertTopLevelItem(target, item)
+        self.setCurrentItem(item)
+        self.order_changed.emit()
+        return True
+
+    def set_row_trim(self, row: int, start_seconds: float, end_seconds: float) -> bool:
+        if not 0 <= row < self.topLevelItemCount():
+            return False
+        item = self.topLevelItem(row)
+        video = item.data(0, Qt.ItemDataRole.UserRole)
+        updated = replace(
+            video,
+            trim_start_seconds=max(0.0, start_seconds),
+            trim_end_seconds=max(0.0, end_seconds),
+        )
+        item.setData(0, Qt.ItemDataRole.UserRole, updated)
+        item.setText(5, self._trim_text(updated))
+        self.order_changed.emit()
+        return True
 
     def set_selected_trim(self, start_seconds: float, end_seconds: float) -> int:
         changed = 0

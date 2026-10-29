@@ -6,7 +6,7 @@
 > **Platform:** Native Windows / PySide6
 
 This page override supersedes the older dark OLED workspace and the generated
-web-oriented master file. It is the approved visual direction for V3.3.
+web-oriented master file. It remains the approved visual direction for V3.4.
 
 ## Visual direction
 
@@ -54,6 +54,8 @@ web-oriented master file. It is the approved visual direction for V3.3.
   3:1 non-text contrast.
 - All long panes scroll vertically with horizontal scrolling disabled.
 - Native checkbox indicators, keyboard focus and readable disabled states remain.
-- The custom timeline is presentation-only; the source list continues to be the
-  authoritative order and FFmpeg work remains outside the UI thread.
+- In manual mode the custom timeline edits the authoritative source list: clip
+  selection, reorder, trim handles, seek-to-still and transition focus all update
+  the real render job. Batch mode remains a read-only sequence summary because its
+  order is controlled by scan/config rules. FFmpeg preview work stays asynchronous.
 - No decorative animation, autoplay, network asset loading or online API.

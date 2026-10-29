@@ -83,14 +83,14 @@ from ..utils.paths import config_dir, sanitize_output_filename
 from .batch_render_worker import BatchRenderWorker
 from .render_worker import RenderWorker
 from .preview_widget import PositionPreviewLabel
-from .studio_widgets import TimelineStrip
+from .studio_widgets import TimelineClipView, TimelineStrip
 from .video_list_widget import VideoListWidget
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("AutoCut Studio · 自动视频剪辑 V3.3")
+        self.setWindowTitle("AutoCut Studio · 自动视频剪辑 V3.4")
         self.resize(1280, 820)
         self.setMinimumSize(900, 650)
         self._store = SettingsStore()
@@ -118,8 +118,13 @@ class MainWindow(QMainWindow):
         self._highlight_color = self._profile_settings.subtitle_style.highlight_color
         self._preview_process: QProcess | None = None
         self._preview_path = config_dir() / "preview.jpg"
+        self._preview_seek_seconds: float | None = None
         self._watch_tracker = FolderStabilityTracker()
         self._build_ui()
+        self._timeline_preview_timer = QTimer(self)
+        self._timeline_preview_timer.setSingleShot(True)
+        self._timeline_preview_timer.setInterval(180)
+        self._timeline_preview_timer.timeout.connect(self.generate_preview)
         self._watch_timer = QTimer(self)
         self._watch_timer.timeout.connect(self._poll_watch_folder)
         self._on_watch_toggled(self.watch_checkbox.isChecked())
@@ -233,14 +238,14 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         heading = QHBoxLayout()
-        title = QLabel("批量项目")
-        title.setObjectName("paneTitle")
-        import_button = QPushButton("导入文件夹")
-        import_button.setObjectName("clayButton")
-        import_button.clicked.connect(self._choose_batch_root)
-        heading.addWidget(title)
+        self.library_title = QLabel("批量项目")
+        self.library_title.setObjectName("paneTitle")
+        self.library_import_button = QPushButton("导入文件夹")
+        self.library_import_button.setObjectName("clayButton")
+        self.library_import_button.clicked.connect(self._import_for_current_mode)
+        heading.addWidget(self.library_title)
         heading.addStretch(1)
-        heading.addWidget(import_button)
+        heading.addWidget(self.library_import_button)
         layout.addLayout(heading)
 
         self.project_search = QLineEdit()
@@ -336,13 +341,18 @@ class MainWindow(QMainWindow):
         timeline_heading = QHBoxLayout()
         timeline_title = QLabel("剪辑时间线")
         timeline_title.setObjectName("sectionTitle")
-        timeline_hint = QLabel("转场与音频会按最终帧数精确对齐")
-        timeline_hint.setObjectName("mutedText")
+        self.timeline_hint = QLabel("批量顺序预览 · 最终按扫描规则处理")
+        self.timeline_hint.setObjectName("mutedText")
         timeline_heading.addWidget(timeline_title)
         timeline_heading.addStretch(1)
-        timeline_heading.addWidget(timeline_hint)
+        timeline_heading.addWidget(self.timeline_hint)
         layout.addLayout(timeline_heading)
         self.timeline_strip = TimelineStrip()
+        self.timeline_strip.clip_selected.connect(self._on_timeline_clip_selected)
+        self.timeline_strip.reorder_requested.connect(self._on_timeline_reorder)
+        self.timeline_strip.trim_requested.connect(self._on_timeline_trim)
+        self.timeline_strip.seek_requested.connect(self._on_timeline_seek)
+        self.timeline_strip.transition_requested.connect(self._on_timeline_transition)
         layout.addWidget(self.timeline_strip)
         return stage
 
@@ -390,6 +400,12 @@ class MainWindow(QMainWindow):
         for index in range(self.project_queue.count()):
             item = self.project_queue.item(index)
             item.setHidden(bool(query) and query not in item.text().casefold())
+
+    def _import_for_current_mode(self) -> None:
+        if str(self.mode_combo.currentData()) == "manual":
+            self._choose_videos()
+        else:
+            self._choose_batch_root()
 
     def _update_navigation_layout(self) -> None:
         if not hasattr(self, "workspace_splitter"):
@@ -510,6 +526,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("手动素材序列")
         layout = QVBoxLayout(group)
         self.video_list = VideoListWidget()
+        self.video_list.set_compact_view(True)
         self.video_list.setMinimumHeight(220)
         self.video_list.files_dropped.connect(self.add_video_paths)
         self.video_list.order_changed.connect(self._update_estimate)
@@ -554,10 +571,68 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "timeline_strip"):
             return
         items = self.video_list.video_items()
-        labels = [item.display_name.rsplit(".", 1)[0] for item in items]
-        if labels:
-            self.timeline_strip.set_clips(labels)
-            self.task_project_label.setText(f"手动项目 · {len(labels)} 段素材")
+        if not items:
+            self.timeline_strip.set_clips(["拖入视频"])
+            self.timeline_strip.set_interactive(False)
+            self.task_project_label.setText("手动项目 · 等待添加视频")
+            return
+        clips = [
+            TimelineClipView(
+                item.display_name.rsplit(".", 1)[0],
+                item.probe.duration_seconds if item.probe else 10.0,
+                item.trim_start_seconds,
+                item.trim_end_seconds,
+            )
+            for item in items
+        ]
+        self.timeline_strip.set_manual_clips(clips)
+        self.timeline_strip.set_interactive(True)
+        self.timeline_strip.set_selected_index(self.video_list.current_video_index())
+        self.task_project_label.setText(f"手动项目 · {len(clips)} 段素材")
+
+    def _on_timeline_clip_selected(self, index: int) -> None:
+        self.video_list.select_row(index)
+        item = self.video_list.current_video()
+        if item is None:
+            return
+        self.preview_status.setText(f"已选择 · {item.display_name}")
+
+    def _on_timeline_reorder(self, source: int, target: int) -> None:
+        if self.video_list.move_row(source, target):
+            self.timeline_strip.set_selected_index(target)
+            self.preview_status.setText(f"片段已移动到第 {target + 1} 位")
+
+    def _on_timeline_trim(self, index: int, start: float, end: float) -> None:
+        if not self.video_list.set_row_trim(index, start, end):
+            return
+        self.video_list.select_row(index)
+        self.trim_start.setValue(start)
+        self.trim_end.setValue(end)
+        end_text = "结尾" if end <= 0 else f"{end:.2f}s"
+        self.preview_status.setText(f"裁剪 {start:.2f}s – {end_text}")
+
+    def _on_timeline_seek(self, index: int, source_seconds: float) -> None:
+        self.video_list.select_row(index)
+        self._preview_seek_seconds = source_seconds
+        self.preview_time.setText(self._format_timestamp(source_seconds))
+        if not self._capabilities:
+            self.preview_status.setText("已定位播放头 · FFmpeg 未就绪")
+            return
+        self.preview_status.setText("正在定位静帧…")
+        self._timeline_preview_timer.start()
+
+    def _on_timeline_transition(self, index: int) -> None:
+        self.inspector_tabs.setCurrentIndex(2)
+        self.advanced_tabs.setCurrentIndex(1)
+        self.transition_type_combo.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.preview_status.setText(f"第 {index + 1} 个转场 · 当前设置应用全部转场")
+
+    @staticmethod
+    def _format_timestamp(seconds: float) -> str:
+        value = max(0, round(seconds * 1000))
+        minutes, remainder = divmod(value, 60_000)
+        whole_seconds, milliseconds = divmod(remainder, 1000)
+        return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
     def _build_optional_group(self) -> QGroupBox:
         group = QGroupBox("品牌与媒体")
@@ -781,9 +856,9 @@ class MainWindow(QMainWindow):
     def _build_advanced_group(self) -> QGroupBox:
         group = QGroupBox("高级剪辑设置")
         outer = QVBoxLayout(group)
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        outer.addWidget(tabs)
+        self.advanced_tabs = QTabWidget()
+        self.advanced_tabs.setDocumentMode(True)
+        outer.addWidget(self.advanced_tabs)
 
         visual = QWidget()
         visual_layout = QGridLayout(visual)
@@ -852,7 +927,7 @@ class MainWindow(QMainWindow):
         visual_layout.addWidget(self.shadow_boost, 5, 1)
         visual_layout.addWidget(QLabel("高光保护"), 5, 2)
         visual_layout.addWidget(self.highlight_protection, 5, 3)
-        tabs.addTab(visual, "画面增强")
+        self.advanced_tabs.addTab(visual, "画面增强")
 
         timeline = QWidget()
         timeline_layout = QGridLayout(timeline)
@@ -902,7 +977,7 @@ class MainWindow(QMainWindow):
         timeline_layout.addWidget(self.export_cover, 3, 2, 1, 2)
         timeline_layout.addWidget(QLabel("封面标题"), 4, 0)
         timeline_layout.addWidget(self.cover_title, 4, 1, 1, 3)
-        tabs.addTab(timeline, "转场/裁剪/封面")
+        self.advanced_tabs.addTab(timeline, "转场/裁剪/封面")
 
         overlay = QWidget()
         overlay_layout = QGridLayout(overlay)
@@ -956,7 +1031,7 @@ class MainWindow(QMainWindow):
         overlay_layout.addWidget(QLabel("左右安全边距"), 6, 2); overlay_layout.addWidget(self.subtitle_horizontal_margin, 6, 3)
         overlay_layout.addWidget(QLabel("高亮关键词"), 7, 0); overlay_layout.addWidget(self.highlight_words, 7, 1, 1, 2); overlay_layout.addWidget(self.highlight_color_button, 7, 3)
         overlay_layout.addWidget(self.subtitle_sample, 8, 0, 1, 4)
-        tabs.addTab(overlay, "Logo/字幕")
+        self.advanced_tabs.addTab(overlay, "Logo/字幕")
 
         audio = QWidget()
         audio_layout = QGridLayout(audio)
@@ -973,7 +1048,7 @@ class MainWindow(QMainWindow):
         audio_layout.addWidget(self.duck_music, 1, 0, 1, 2)
         audio_layout.addWidget(QLabel("配乐淡入"), 1, 2); audio_layout.addWidget(self.music_fadein, 1, 3)
         audio_layout.addWidget(QLabel("配乐淡出"), 2, 2); audio_layout.addWidget(self.music_fadeout, 2, 3)
-        tabs.addTab(audio, "音频")
+        self.advanced_tabs.addTab(audio, "音频")
 
         self._apply_settings_to_controls(self._profile_settings)
         for control in (
@@ -1100,16 +1175,21 @@ class MainWindow(QMainWindow):
         )
         self.project_queue.setVisible(batch)
         self.project_search.setVisible(batch)
+        self.library_title.setText("批量项目" if batch else "手动素材")
+        self.library_import_button.setText("导入文件夹" if batch else "添加视频")
         if batch:
             self.estimate_label.setText(
                 "批量输出使用命名模板；可用 {prefix}、{folder}、{index}、{date}。"
             )
             self.timeline_strip.set_clips(["岩壁", "结构", "吊装", "成品"])
+            self.timeline_strip.set_interactive(False)
+            self.timeline_hint.setText("批量顺序预览 · 最终按扫描规则处理")
+            self.preview_status.setText("批量顺序预览 · 切换到手动剪辑可编辑")
         else:
             self._update_estimate()
-            self.timeline_strip.set_clips(
-                [item.display_name.rsplit(".", 1)[0] for item in self.video_list.video_items()]
-            )
+            self._update_studio_timeline()
+            self.timeline_hint.setText("拖动排序与裁剪 · 点击刻度定位")
+            self.preview_status.setText("点击时间线刻度定位静帧")
         self._active_mode = mode
 
     def _choose_batch_root(self) -> None:
@@ -1155,6 +1235,7 @@ class MainWindow(QMainWindow):
         if scan.sources:
             first_source = scan.sources[0]
             self.timeline_strip.set_clips([path.stem for path in first_source.video_paths])
+            self.timeline_strip.set_interactive(False)
             self.task_project_label.setText(
                 f"{first_source.source_dir.name} · {len(first_source.video_paths)} 段素材已就绪"
             )
@@ -1467,6 +1548,10 @@ class MainWindow(QMainWindow):
             return
         self.trim_start.setValue(item.trim_start_seconds)
         self.trim_end.setValue(item.trim_end_seconds)
+        index = self.video_list.current_video_index()
+        if hasattr(self, "timeline_strip"):
+            self.timeline_strip.set_selected_index(index)
+        self._preview_seek_seconds = item.trim_start_seconds
 
     def _apply_selected_trim(self) -> None:
         if self.trim_end.value() > 0 and self.trim_end.value() <= self.trim_start.value():
@@ -1498,10 +1583,13 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "无法预览", str(exc))
             return
+        preview_start = start
+        if self._preview_seek_seconds is not None:
+            preview_start = min(max(start, self._preview_seek_seconds), max(start, end - 1 / 60))
         graph = build_normalization_filter(
             item.probe,
             settings,
-            clip_start_seconds=start,
+            clip_start_seconds=preview_start,
             clip_end_seconds=end,
         )
         graph += f",{build_enhancement_filter(settings)}"
@@ -1517,7 +1605,12 @@ class MainWindow(QMainWindow):
         process.finished.connect(self._preview_finished)
         process.errorOccurred.connect(lambda _error: self.preview_status.setText("预览进程启动失败。"))
         self._preview_process = process
-        self.preview_status.setText("正在生成预览…")
+        index = self.video_list.current_video_index()
+        self.timeline_strip.set_playhead(index, preview_start)
+        self.preview_time.setText(
+            f"{self._format_timestamp(preview_start)} / {self._format_timestamp(item.probe.duration_seconds)}"
+        )
+        self.preview_status.setText("正在生成定位静帧…")
         process.start()
 
     def _preview_finished(self, exit_code: int, _status: object) -> None:
